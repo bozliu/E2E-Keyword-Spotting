@@ -43,7 +43,11 @@ CUDA_VISIBLE_DEVICES=0,1 python train.py
 ```
 python test.py 
 ```
-## Neural Network Architectures  
+## Neural Network Architectures
+### General Architecture
+![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Standard%20E2E%20Architecture.png)
+
+
 1. Multi-head Attention
 * Encoder: GRU/LSM 
 * Attention Heads: 8
