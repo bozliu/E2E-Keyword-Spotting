@@ -58,7 +58,7 @@ python test.py
 Result can be viewed on [wandb](https://wandb.ai/bozliu/google_speech_command?workspace=user-bozliu)
 
 ### Model Parameters 
-![avatar](https://wandb.ai/bozliu/google_speech_command/reports/Shared-panel-21-03-10-15-03-03--Vmlldzo1MTc2NDk)
+![image](images/model_parameters.png)
 
 ###
 
