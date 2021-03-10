@@ -25,14 +25,6 @@ Joint End to End Approaches to Improving Far-field Wake-up Keyword Detection
 
 #### How to Use
 Dataset is from [Google Speech Command](./basicsr/data/paired_image_dataset.py) 
-* Directly read disk data.
-```yaml
-type: PairedImageDataset
-dataroot_gt: datasets/DIV2K/DIV2K_train_HR_sub
-dataroot_lq: datasets/DIV2K/DIV2K_train_LR_bicubic/X4_sub
-io_backend:
-  type: disk
-```
 * Data Pre-processing (Has already been done)
 1. According to the file, dataset has already been splited into three folders, train, test, and valid. 
 1. The splited [Google Speech Command dataset](https://drive.google.com/file/d/1InqR8n7l5Qj6voJREpcjHYWHVTKG-BbB/view?usp=sharing) is saved on Google Drive folder. 
