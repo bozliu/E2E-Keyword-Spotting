@@ -59,8 +59,8 @@ python test.py
 2. VGG-19 with batch normalization
 3. Deep Residual Neural Network ('resnet18', 'resnet34', 'resnet50') 
 4. Wide Residual Networks ('wideresnet28_10') imported from the [repository](https://github.com/xternalz/WideResNet-pytorch/blob/master/wideresnet.py)
-5. Dual Path Networks from [arxiv](https://arxiv.org/abs/1707.01629) imported from [repository](https://github.com/kuangliu/pytorch-cifar/blob/master/models/dpn.py)
-6. Densely Connected Convolutional Networks from [arxiv](https://arxiv.org/abs/1608.06993) imported from [repository](https://github.com/bearpaw/pytorch-classification/blob/master/models/cifar/densenet.py)
+5. Dual Path Networks from [arxiv](https://arxiv.org/abs/1707.01629) 
+6. Densely Connected Convolutional Networks from [arxiv](https://arxiv.org/abs/1608.06993)
 
 ## Result
 
