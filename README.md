@@ -49,6 +49,7 @@ python test.py
 
 
 1. Multi-head Attention
+![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png)
 * Encoder: GRU/LSM 
 * Attention Heads: 8
 * GRU hidden nodes: 128/256/512
