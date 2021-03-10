@@ -71,7 +71,7 @@ Result can be viewed on [wandb](https://wandb.ai/bozliu/google_speech_command?wo
 ![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/best%20loss.png)
 
 ## Files Description
-├── kws
+├── kws   
 │   ├── metrics  
 │   │   ├── fnr_fpr.py  
 │   │   ├── __init__.py  
