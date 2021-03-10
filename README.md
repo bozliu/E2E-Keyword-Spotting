@@ -72,25 +72,23 @@ Result can be viewed on [wandb](https://wandb.ai/bozliu/google_speech_command?wo
 
 ## Files Description
 ├── kws
-│   ├── metrics
-│   │   ├── fnr_fpr.py
-│   │   ├── __init__.py
-│   ├── models
-│   │   ├── attention.py
-│   │   ├── crnn.py
-│   │   ├── densenet.py
-│   │   ├── dpn.py
-│   │   ├── __init__.py
-│   │   ├── resnet.py
-│   │   ├── resnext.py
-│   │   ├── treasure_net.py
-│   │   ├── vgg.py
-│   │   └── wideresnet.py
-│   ├── transforms
-│   ├── utils.py
-├── config.py
-
-   
+│   ├── metrics  
+│   │   ├── fnr_fpr.py  
+│   │   ├── __init__.py  
+│   ├── models  
+│   │   ├── attention.py  
+│   │   ├── crnn.py  
+│   │   ├── densenet.py  
+│   │   ├── dpn.py  
+│   │   ├── __init__.py  
+│   │   ├── resnet.py   
+│   │   ├── resnext.py  
+│   │   ├── treasure_net.py  
+│   │   ├── vgg.py  
+│   │   └── wideresnet.py  
+│   ├── transforms  
+│   ├── utils.py  
+├── config.py  
 
 * *./kws/metrics* : Evaluation matrics, defining the False Rejection Rate (FRR) and False Alarm Rate (FAR) for keyword spotting
 * *./kws/models* : Diffferent network architecture 
