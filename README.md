@@ -61,10 +61,10 @@ Result can be viewed on [wandb](https://wandb.ai/bozliu/google_speech_command?wo
 ![image](images/model_parameters.png)
 
 ### Best Accuracy Training Process
-![image](images/best accuracy.png)
+![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/best%20accuracy.png)
 
 ### Best Loss Training Process
-![image](images/best loss.png)
+![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/best%20loss.png)
 
 ## Files Description
 ├── assets
