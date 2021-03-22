@@ -67,7 +67,7 @@ python test.py
 Result can be viewed on [wandb](https://wandb.ai/bozliu/google_speech_command?workspace=user-bozliu)
 
 ### Model Parameters 
-![image](images/model_parameters.png)
+![image](images/model_parameters.png| width=100)
 
 ### Best Accuracy Training Process
 ![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/best%20accuracy.png)
