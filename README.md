@@ -49,8 +49,7 @@ python test.py
 
 
 1. Multi-head Attention
-<img src="https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png" width="100">
-![](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png = 250x)
+<img src="https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png" width="100%">
 * Encoder: GRU/LSM 
 * Attention Heads: 8
 * GRU hidden nodes: 128/256/512
@@ -66,7 +65,7 @@ python test.py
 ## Result
 
 ### Model Parameters 
-![image](images/model_parameters.png| width=100)
+<img src="images/model_parameters.png" width="100%">
 
 ### Best Accuracy Training Process
 ![image](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/best%20accuracy.png)
