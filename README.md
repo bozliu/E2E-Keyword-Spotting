@@ -49,6 +49,7 @@ python test.py
 
 
 1. Multi-head Attention
+<img src="https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png" width="50%" height="50%">
 ![](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png = 250x)
 * Encoder: GRU/LSM 
 * Attention Heads: 8
