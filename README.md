@@ -45,8 +45,7 @@ python test.py
 ```
 ## Neural Network Architectures
 ### General Architecture
-![](https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Standard%20E2E%20Architecture.png =250x)
-
+<img src="https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Standard%20E2E%20Architecture.png " width="100%">
 
 1. Multi-head Attention
 <img src="https://github.com/bozliu/E2E-Keyword-Spotting/blob/main/images/Multi-Head%20Attention%20Architecture.png" width="100%">
