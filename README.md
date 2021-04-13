@@ -55,7 +55,7 @@ python test.py
 * GRU layers: 1/2/3
 * Increasing GRU hidden layers nodes can increase the performance much better than increasing hidden layers 
 
-2. VGG-19 with batch normalization
+2. VGG19/VGG16/VGG13/Vgg11 with/without batch normalization
 3. Deep Residual Neural Network ('resnet18', 'resnet34', 'resnet50') 
 4. Wide Residual Networks ('wideresnet28_10') imported from the [repository](https://github.com/xternalz/WideResNet-pytorch/blob/master/wideresnet.py)
 5. Dual Path Networks from [arxiv](https://arxiv.org/abs/1707.01629) 
