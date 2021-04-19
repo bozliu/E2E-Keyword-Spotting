@@ -27,7 +27,7 @@ Joint End to End Approaches to Improving Far-field Wake-up Keyword Detection
 Dataset is from [Google Speech Command](https://ai.googleblog.com/2017/08/launching-speech-commands-dataset.html) published in  [arxiv](https://arxiv.org/abs/1804.03209).
 * Data Pre-processing (Has already been done)
 1. According to the file, dataset has already been splited into three folders, train, test, and valid. 
-1. The splited [Google Speech Command dataset](https://drive.google.com/file/d/1InqR8n7l5Qj6voJREpcjHYWHVTKG-BbB/view?usp=sharing) is saved on Google Drive folder. 
+1. The splited [Google Speech Command dataset](https://drive.google.com/file/d/1InqR8n7l5Qj6voJREpcjHYWHVTKG-BbB/view?usp=sharing) is saved in Google Drive folder. 
     
 ## :computer: Train and Test
 ### Training commands
