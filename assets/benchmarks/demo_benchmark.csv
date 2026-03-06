@@ -1,0 +1,4 @@
+run,display_name,runtime_device,params,latency_ms,kws12_target_recall,unknown_to_target_rate,focus_keyword_recall_mean,focus_pair_confusion_rate,notes
+quick_mhatt,Quick MHAtt baseline,cpu,1727232,15.48,0.73120,0.06303,0.78783,,Internal lightweight baseline before distillation and keyword-focus refinement
+demo_mhatt_small_focus,Distilled focus model,cpu,807176,6.50,0.88508,0.02671,0.85820,0.08616,Distilled lightweight model with keyword-focus weighting and runtime calibration
+demo_mhatt_small_focus_lod,Latest public demo (LOD),cpu,807176,6.92,0.87339,0.05483,0.93029,0.03003,Targeted left/on/down refinement for the public realtime demo

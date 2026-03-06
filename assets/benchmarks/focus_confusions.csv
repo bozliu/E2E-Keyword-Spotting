@@ -1,0 +1,7 @@
+run,keyword,support,recall,confusion_count,confusion_rate
+demo_mhatt_small_focus,left,267,0.92884,10,0.03745
+demo_mhatt_small_focus,on,246,0.76829,43,0.17480
+demo_mhatt_small_focus,down,253,0.87747,13,0.05138
+demo_mhatt_small_focus_lod,left,267,0.95880,2,0.00749
+demo_mhatt_small_focus_lod,on,246,0.93089,12,0.04878
+demo_mhatt_small_focus_lod,down,253,0.90119,9,0.03557
