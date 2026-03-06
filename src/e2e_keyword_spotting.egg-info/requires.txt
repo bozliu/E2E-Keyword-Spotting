@@ -1,0 +1,14 @@
+torch<2.7,>=2.5
+torchaudio<2.7,>=2.5
+mambapy>=1.2.0
+librosa<0.12,>=0.11
+sounddevice<0.6,>=0.5
+numpy<3,>=1.26
+pandas<3,>=2.2
+scikit-learn<2,>=1.5
+PyYAML<7,>=6.0
+huggingface_hub<1,>=0.30
+transformers<5,>=4.51
+tqdm<5,>=4.66
+matplotlib<4,>=3.9
+tensorboard<3,>=2.18

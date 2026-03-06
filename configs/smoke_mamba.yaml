@@ -1,0 +1,51 @@
+seed: 1337
+run_name: smoke_mamba
+
+model:
+  name: keyword_mamba
+  d_model: 96
+  n_layers: 2
+  d_state: 16
+  d_conv: 4
+  expand_factor: 2
+  dropout: 0.10
+
+features:
+  sample_rate: 16000
+  audio_seconds: 1.0
+  n_fft: 512
+  hop_length: 128
+  n_mels: 64
+  f_min: 20.0
+  f_max: 7600.0
+
+data:
+  manifests_dir: data/processed/manifests
+  local:
+    speech_commands_split: data/local/speech_commands_split
+    silence_ratio: 0.10
+    limit_per_class: 8
+    optional_test_mirror: data/optional/speech_commands_mirror
+  external:
+    hi_mia:
+      enabled: true
+      root: data/external/hi_mia
+      limit_per_split: 120
+
+training:
+  device: auto
+  output_dir: outputs
+  epochs: 1
+  batch_size: 64
+  num_workers: 0
+  augment: true
+  optimizer: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+  lr_gamma: 0.5
+  lr_patience: 1
+  loss_weights:
+    command: 1.0
+    wake: 1.0
+    aux: 0.02
+  aux_margin: 0.2
