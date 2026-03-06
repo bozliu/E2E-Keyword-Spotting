@@ -1,0 +1,4 @@
+method,year,dataset_protocol,headline_metric,headline_value,source_type,comparability
+Public v2 release (ours),2026,Speech Commands V1 12-label task plus HI-MIA negatives,KWS12 target recall / latency,87.34% / 6.92 ms,Reproduced in this repo,Not directly comparable
+MatchboxNet-3x2x64 [4],2020,Speech Commands V2 12-class,Accuracy,98.19%,Reported from paper,Close but not exact
+BC-ResNet [5],2021,Speech Commands V2 12-class,Accuracy,98.0%,Reported from paper,Close but not exact
