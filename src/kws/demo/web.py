@@ -89,6 +89,7 @@ WEB_GATE_OPEN_FLOOR = 0.28
 WEB_GATE_CLOSE_FLOOR = 0.16
 WEB_GATE_CALIBRATION_WAKE_CAP = 0.55
 WEB_GATE_MAX_OPEN_THR = 0.72
+WEB_WHEEL_REFRESH_SECONDS = 0.30
 WEB_SPEECH_ESCAPE_MIN_FRAMES = 2
 WEB_SPEECH_ESCAPE_RMS = 0.0006
 WEB_SPEECH_ESCAPE_PEAK = 0.008
@@ -159,6 +160,9 @@ class PublicBrowserStreamState:
     last_gate_state: str = "calibrating"
     last_open_thr: float = 0.0
     last_close_thr: float = 0.0
+    last_wheel_signature: tuple[str, ...] | None = None
+    last_wheel_image: np.ndarray | None = None
+    last_wheel_rendered_at: float = 0.0
     speech_like_frames: int = 0
     speech_like_active: bool = False
 
@@ -605,7 +609,11 @@ def render_keyword_wheel(
             f"{label}:{score:.2f}" for label, score in top_scores
         )
     hud.status.set_text(status)
-    return fig
+    fig.canvas.draw()
+    width, height = fig.canvas.get_width_height()
+    image = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(height, width, 4)[..., :3].copy()
+    plt.close(fig)
+    return image
 
 
 def format_top_confusions(result: WebDemoResult) -> str:
@@ -721,6 +729,61 @@ class PublicBrowserDemo:
             state = self._new_stream_state(bundle, sample_rate)
         return state, sample_rate, waveform_np
 
+    @staticmethod
+    def _wheel_signature(
+        *,
+        prompt_label: str,
+        result: WebDemoResult,
+        mic_state: str,
+        gate_state: str,
+    ) -> tuple[str, ...]:
+        return (
+            str(prompt_label),
+            str(result.label),
+            str(result.wheel_active_label or ""),
+            str(result.preview_label or ""),
+            str(mic_state),
+            str(gate_state),
+        )
+
+    def _render_wheel_output(
+        self,
+        result: WebDemoResult,
+        *,
+        prompt_label: str,
+        wheel_status: str,
+        mic_state: str,
+        gate_state: str,
+        state: PublicBrowserStreamState | None,
+        allow_skip: bool,
+        render_clock: float | None,
+    ):
+        signature = self._wheel_signature(
+            prompt_label=prompt_label,
+            result=result,
+            mic_state=mic_state,
+            gate_state=gate_state,
+        )
+        if render_clock is not None:
+            render_ts = float(render_clock)
+        elif state is not None and state.last_infer_at:
+            render_ts = float(state.last_infer_at)
+        else:
+            render_ts = float(time.monotonic())
+
+        if allow_skip and state is not None and state.last_wheel_image is not None and state.last_wheel_signature == signature:
+            if (render_ts - state.last_wheel_rendered_at) < WEB_WHEEL_REFRESH_SECONDS:
+                import gradio as gr
+
+                return gr.skip()
+
+        image = render_keyword_wheel(result, prompt_label=prompt_label, status_override=wheel_status)
+        if state is not None:
+            state.last_wheel_signature = signature
+            state.last_wheel_image = image
+            state.last_wheel_rendered_at = render_ts
+        return image
+
     def _render_stream_outputs(
         self,
         bundle: LoadedWebDemo,
@@ -729,6 +792,8 @@ class PublicBrowserDemo:
         *,
         prompt_label: str,
         extra_status: str,
+        allow_wheel_skip: bool = False,
+        render_clock: float | None = None,
     ):
         mic_state = state.mic_state if state is not None else MIC_CHECK
         gate_state = state.last_gate_state if state is not None else "calibrating"
@@ -763,7 +828,16 @@ class PublicBrowserDemo:
             f"preview={preview_label} "
             f"open={open_thr:.2f} close={close_thr:.2f} gain={gain_db:.1f}dB clip={int(clip_flag)}"
         )
-        figure = render_keyword_wheel(result, prompt_label=prompt_label, status_override=wheel_status)
+        figure = self._render_wheel_output(
+            result,
+            prompt_label=prompt_label,
+            wheel_status=wheel_status,
+            mic_state=mic_state,
+            gate_state=gate_state,
+            state=state,
+            allow_skip=allow_wheel_skip,
+            render_clock=render_clock,
+        )
         return summary, status, format_top_confusions(result), figure, state
 
     def predict(self, audio: object | None):
@@ -1107,6 +1181,8 @@ class PublicBrowserDemo:
                 step.result,
                 prompt_label=step.prompt_label,
                 extra_status=step.extra_status,
+                allow_wheel_skip=True,
+                render_clock=step.state.last_infer_at if step.state is not None else None,
             )
         except StreamAdvanceError as exc:
             return self._render_stream_error(state=state, stage=exc.stage, exc=exc.original, bundle=bundle)
@@ -1196,7 +1272,7 @@ def create_gradio_app(checkpoint: str = "auto", *, selection_profile: str = "sta
             status = gr.Textbox(label="Status", lines=7, interactive=False)
         with gr.Row():
             confusions = gr.Textbox(label="Hard-word competitors", lines=5, interactive=False)
-            figure = gr.Plot(label="Keyword wheel")
+            figure = gr.Image(label="Keyword wheel", type="numpy", interactive=False)
         debug_file = gr.File(label="Debug stream file", type="filepath", visible=False)
         debug_trace = gr.Textbox(label="Debug stream trace", visible=False)
         app.load(fn=demo.reset_stream, outputs=[summary, status, confusions, figure, session])

@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 import wave
 
+import gradio as gr
 import numpy as np
 import torch
 
@@ -48,6 +49,13 @@ class _IdentityFrontend:
         if base.numel() == 0:
             base = torch.zeros(64, dtype=torch.float32)
         return base.unsqueeze(0).repeat(8, 1)
+
+
+def _assert_wheel_image(image) -> None:
+    assert isinstance(image, np.ndarray)
+    assert image.ndim == 3
+    assert image.shape[2] == 3
+    assert image.dtype == np.uint8
 
 
 def test_normalize_audio_input_downmixes_and_scales_int16() -> None:
@@ -209,7 +217,7 @@ def test_stream_accepts_filepath_audio_payload(monkeypatch, tmp_path: Path) -> N
 
     assert "Prompt: LISTENING" in summary2
     assert "Preview: yes" in status2
-    assert figure2 is not None
+    _assert_wheel_image(figure2)
 
 
 def test_stream_reports_runtime_failures_without_raising(monkeypatch) -> None:
@@ -233,7 +241,7 @@ def test_stream_reports_runtime_failures_without_raising(monkeypatch) -> None:
     demo = web.PublicBrowserDemo()
     monkeypatch.setattr(demo, "_bundle", lambda: bundle)
 
-    clock = iter([0.0, 0.20])
+    clock = iter([0.0, 0.20, 0.20])
     monkeypatch.setattr(web.time, "monotonic", lambda: next(clock))
 
     chunk = (16_000, (0.02 * np.sin(np.linspace(0.0, 12.0 * np.pi, 4000, endpoint=False))).astype(np.float32))
@@ -277,8 +285,111 @@ def test_debug_stream_file_reuses_live_runtime_and_returns_trace(monkeypatch, tm
 
     assert "Prompt: LISTENING" in summary
     assert "Preview: yes" in status
-    assert figure is not None
+    _assert_wheel_image(figure)
     assert "preview=yes" in trace
+
+
+def test_render_keyword_wheel_returns_rgb_image() -> None:
+    result = web.WebDemoResult(
+        label="YES",
+        confidence=0.91,
+        wake_prob=0.88,
+        gate_open=True,
+        status_message="ok",
+        keyword_scores={label: 0.0 for label in KWS12_LABELS},
+        top_confusions=[],
+        latency_ms=5.0,
+        wheel_active_label="yes",
+    )
+    image = web.render_keyword_wheel(result, prompt_label="MATCH", status_override="status")
+    _assert_wheel_image(image)
+
+
+def test_render_stream_outputs_skips_duplicate_wheel_frames() -> None:
+    bundle = web.LoadedWebDemo(
+        checkpoint_path=Path("dummy.pt"),
+        runtime_device=torch.device("cpu"),
+        checkpoint_name="dummy",
+        model=_DummyModel(),
+        frontend=None,
+        command31_labels=["silence", "yes", "no"],
+        wheel="kws12",
+        keyword_calibration={},
+        sample_rate=16_000,
+        clip_samples=16_000,
+        verifier=None,
+        display_conf_thr=0.35,
+        display_wake_thr=0.45,
+        default_vote_window=4,
+        default_vote_min_count=2,
+    )
+    demo = web.PublicBrowserDemo()
+    state = demo._new_stream_state(bundle, sample_rate=16_000)
+    state.mic_state = web.MIC_RUNNING
+    state.last_gate_state = "open"
+    result = web.WebDemoResult(
+        label="LISTENING",
+        confidence=0.62,
+        wake_prob=0.55,
+        gate_open=True,
+        status_message="preview",
+        keyword_scores={label: 0.0 for label in KWS12_LABELS},
+        top_confusions=[],
+        latency_ms=9.0,
+        wheel_active_label="yes",
+        preview_label="yes",
+        preview_reason="preview-ok",
+        raw_command_confidence=0.62,
+        raw_wake_probability=0.55,
+    )
+
+    _summary1, _status1, _conf1, image1, _state1 = demo._render_stream_outputs(
+        bundle,
+        state,
+        result,
+        prompt_label="LISTENING",
+        extra_status="extra",
+        allow_wheel_skip=True,
+        render_clock=1.0,
+    )
+    _assert_wheel_image(image1)
+
+    _summary2, _status2, _conf2, image2, _state2 = demo._render_stream_outputs(
+        bundle,
+        state,
+        result,
+        prompt_label="LISTENING",
+        extra_status="extra",
+        allow_wheel_skip=True,
+        render_clock=1.1,
+    )
+    assert image2 == gr.skip()
+
+    changed = web.WebDemoResult(
+        label="MATCH",
+        confidence=result.confidence,
+        wake_prob=result.wake_prob,
+        gate_open=result.gate_open,
+        status_message=result.status_message,
+        keyword_scores=result.keyword_scores,
+        top_confusions=result.top_confusions,
+        latency_ms=result.latency_ms,
+        wheel_active_label="no",
+        preview_label=None,
+        preview_reason="accepted",
+        raw_command_confidence=result.raw_command_confidence,
+        raw_wake_probability=result.raw_wake_probability,
+    )
+    _summary3, _status3, _conf3, image3, _state3 = demo._render_stream_outputs(
+        bundle,
+        state,
+        changed,
+        prompt_label="MATCH",
+        extra_status="extra",
+        allow_wheel_skip=True,
+        render_clock=1.15,
+    )
+    _assert_wheel_image(image3)
 
 
 def test_format_top_confusions_lists_scores() -> None:
@@ -336,6 +447,9 @@ def test_create_gradio_app_only_exposes_microphone_input() -> None:
     assert len(audio_components) == 1
     assert audio_components[0]["props"]["sources"] == ["microphone"]
     assert audio_components[0]["props"]["streaming"] is True
+    image_components = [component for component in components if component.get("type") == "image"]
+    assert len(image_components) >= 1
+    assert any(component["props"].get("label") == "Keyword wheel" for component in image_components)
 
 
 def test_create_gradio_app_exposes_debug_stream_file_api() -> None:
