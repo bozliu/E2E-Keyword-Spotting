@@ -12,11 +12,14 @@ For the broader `v3` repo release flow, see [`docs/public_release_v3.md`](public
 - `conda run -n dl python -V` reports Python 3.12
 - `conda run -n dl python -m pip install -e . -r requirements-space.txt` succeeds
 - `conda run -n dl python -m py_compile app.py scripts/deploy_hf_space.py src/kws/demo/web.py` succeeds
-- `conda run --no-capture-output -n dl pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py` succeeds
+- `conda run --no-capture-output -n dl python -m pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py` succeeds
 - Web smoke inference returns a valid response
 - No local/private files are staged for upload: datasets, outputs, cache, user profiles, checkpoints
 
 ## Deployment
+- GitHub Actions repo settings are configured:
+  - secret: `HF_TOKEN`
+  - variable: `HF_SPACE_ID=bozliu/e2e-keyword-spotting-demo`
 - `HF_TOKEN` is available locally or via `huggingface-cli login`
 - `HF_SPACE_ID` is set correctly or passed to `scripts/release_public_demo.sh`
 - `scripts/release_public_demo.sh` completes without errors
