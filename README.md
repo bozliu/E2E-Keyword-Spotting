@@ -17,8 +17,8 @@ The short version:
   - detector gate + external `AST + SUPERB` ensemble
   - requires Apple `MPS`
 - `Hosted browser demo`
-  - currently retired from public hosting because it only exposed the lightweight CPU path
-  - the released public artifact is the `v3` model repo rather than a live HF Space
+  - free Hugging Face Space with browser mic + CPU inference
+  - convenience/public access path only, separate from the local `accuracy-first` MPS demo
 
 ## Release Status
 
@@ -157,6 +157,7 @@ Current public interpretation:
 ## Public Demo And Release Assets
 
 - GitHub repo: [bozliu/E2E-Keyword-Spotting](https://github.com/bozliu/E2E-Keyword-Spotting)
+- Hugging Face Space demo: [bozliu/e2e-keyword-spotting-demo](https://huggingface.co/spaces/bozliu/e2e-keyword-spotting-demo)
 - Public release process: [`docs/public_release_v3.md`](docs/public_release_v3.md)
 - Browser demo checklist: [`docs/public_demo_release_checklist.md`](docs/public_demo_release_checklist.md)
 
@@ -165,7 +166,7 @@ Recommended hosting split:
 - GitHub: source code, figures, cleaned metrics, release notes, demo GIF/MP4
 - GitHub Releases: our own checkpoints and calibration files
 - Hugging Face model repo: model card + our release artifacts
-- Hugging Face Space: not currently published; re-enable only if we ship a browser path that matches the current public story
+- Hugging Face Space: free CPU/browser demo for public mic testing, kept clearly separate from the local `MPS` flagship path
 
 Version navigation:
 

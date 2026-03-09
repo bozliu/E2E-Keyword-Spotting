@@ -86,13 +86,13 @@ Recommended split:
 
 - GitHub: source code, README, release notes, figures, GIF, cleaned metrics
 - Hugging Face model repo: our checkpoint(s), calibration, model card, usage notes
-- Hugging Face Space: currently unpublished; only re-enable it if the hosted path matches the current public release story
+- Hugging Face Space: free CPU/browser demo only; keep it clearly labeled as a convenience path, not the local `MPS` flagship demo
 
-If a hosted browser demo is re-enabled later, keep only one public Space entrypoint:
+Keep only one public Space entrypoint:
 
 - `bozliu/e2e-keyword-spotting-demo`
 
-Do not keep preview, smoke, or fresh-clone Spaces public.
+Do not keep preview, smoke, or fresh-clone Spaces public. Do not describe the Space as “the same as local v3”.
 
 For `ensemble/ast-superb-kws12`, publish:
 

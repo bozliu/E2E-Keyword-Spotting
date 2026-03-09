@@ -9,12 +9,17 @@ python_version: 3.12
 app_file: app.py
 pinned: false
 license: mit
-short_description: Public browser-mic demo for lightweight keyword spotting.
+short_description: Free CPU browser-mic KWS demo; separate from local v3.
 ---
 
 # Public Keyword Spotting Demo
 
-This Hugging Face Space exposes the latest lightweight keyword spotting model through a browser microphone interface.
+This Hugging Face Space exposes a free browser-microphone keyword spotting demo for public testing.
+
+It is intentionally **not** the same operating mode as the local `v3` desktop demo:
+
+- local flagship demo: `accuracy-first`, Apple `MPS`, external `AST + SUPERB` ensemble
+- this hosted demo: browser mic, hosted `CPU`, public lightweight checkpoint
 
 ## What this demo does
 - lets users stream speech continuously from the browser microphone
@@ -23,6 +28,7 @@ This Hugging Face Space exposes the latest lightweight keyword spotting model th
 - visualizes the keyword wheel used in the desktop demo
 
 ## Important notes
+- This Space is the free public browser path, not the highest-accuracy local `v3` path.
 - This hosted demo follows the local realtime flow more closely, but still runs inside a browser rather than the desktop `sounddevice` loop.
 - Cloud CPU latency may differ from local Apple Silicon latency.
 - Hard words such as `left`, `on`, and `down` use stricter guardrails to reduce confusion.

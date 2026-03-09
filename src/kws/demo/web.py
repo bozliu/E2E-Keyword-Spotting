@@ -45,20 +45,19 @@ from kws.demo.web_runtime import (
 from kws.models import create_model
 from kws.utils.keyword_focus import DEFAULT_RUNTIME_CONFUSION_GROUPS, load_keyword_calibration
 
-PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0.0"
-LEGACY_PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0-public"
+PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v3.0.0"
 PUBLIC_CHECKPOINTS: Dict[str, Dict[str, str]] = {
     "demo_mhatt_small_focus_lod": {
-        "filename": "demo_mhatt_small_focus_lod_best_kws12.pt",
-        "sha256": "2263a6bab3c0b7d6015d076c094af5b90a1efbb3c18c054e41ed4202b4c9a615",
+        "filename": "best_kws12.pt",
+        "sha256": "220c61110adf2447884852d879eb05f3fd4df1907bd1bc3485f2d468add0f4f0",
     },
     "demo_mhatt_small_focus": {
-        "filename": "demo_mhatt_small_focus_best_kws12.pt",
+        "filename": "best_kws12.pt",
         "sha256": "220c61110adf2447884852d879eb05f3fd4df1907bd1bc3485f2d468add0f4f0",
     },
     "quick_mhatt": {
-        "filename": "quick_mhatt_best_kws12.pt",
-        "sha256": "452b00f1733d8a33333b12a8b2fa412061c3aa6ecdd23f65fd7f4c4960f5160e",
+        "filename": "best_kws12.pt",
+        "sha256": "220c61110adf2447884852d879eb05f3fd4df1907bd1bc3485f2d468add0f4f0",
     },
 }
 DEFAULT_PUBLIC_CHECKPOINT = "demo_mhatt_small_focus"
@@ -190,11 +189,7 @@ def _sha256(path: Path) -> str:
 
 def _checkpoint_urls(name: str) -> list[str]:
     meta = PUBLIC_CHECKPOINTS[name]
-    return [
-        f"{PUBLIC_RELEASE_BASE}/{meta['filename']}",
-        # Temporary compatibility fallback while the legacy public alias is being retired remotely.
-        f"{LEGACY_PUBLIC_RELEASE_BASE}/{meta['filename']}",
-    ]
+    return [f"{PUBLIC_RELEASE_BASE}/{meta['filename']}"]
 
 
 def ensure_public_checkpoint(name: str = DEFAULT_PUBLIC_CHECKPOINT, cache_dir: str | Path = DEFAULT_SPACE_CACHE_DIR) -> Path:
@@ -1179,8 +1174,9 @@ def create_gradio_app(checkpoint: str = "auto", *, selection_profile: str = "sta
         sensitivity_profile=sensitivity_profile,
     )
     description = (
-        "Speak directly into your browser mic to run the public keyword spotting demo in a continuous live loop. "
-        "The UI mirrors the local desktop demo more closely with live listening, gate calibration, and keyword-wheel updates."
+        "Speak directly into your browser mic to run the free hosted keyword spotting demo in a continuous live loop. "
+        "This browser app mirrors the local desktop interaction style, but it is a CPU-hosted public demo rather than the local "
+        "Apple MPS accuracy-first path."
     )
     with gr.Blocks(theme=gr.themes.Soft(), title="Public KWS Browser Demo") as app:
         session = gr.State(value=None)
@@ -1225,6 +1221,7 @@ def create_gradio_app(checkpoint: str = "auto", *, selection_profile: str = "sta
         gr.Markdown(
             "**Notes**\n"
             "- This hosted demo now runs as a continuous browser microphone loop instead of a one-shot clip button.\n"
+            "- It is the free CPU/browser demo path, not the highest-accuracy local v3 desktop mode.\n"
             "- CPU latency in the cloud may differ from local Apple Silicon results.\n"
             "- Hard words such as left / on / down use stricter guardrails to reduce confusion."
         )
