@@ -40,4 +40,4 @@ def test_generate_release_assets_builds_expected_files(tmp_path):
     payload = json.loads(summary_json.read_text(encoding="utf-8"))
     assert payload["headline"]["model"] == "ensemble/ast-superb-kws12"
     assert len(payload["version_rows"]) == 3
-    assert any(row["version"] == "v3 (current release candidate)" for row in payload["version_rows"])
+    assert any(row["version"] == "v3 (main / v3.0.0)" for row in payload["version_rows"])

@@ -93,7 +93,7 @@ def _build_version_rows(v2: dict[str, Any], v3: dict[str, Any]) -> list[dict[str
             "status": "historical reference only",
         },
         {
-            "version": "v2 (recent main)",
+            "version": "v2 (v2.0.0 tag)",
             "core_stack": "MHAtt-CRNN detector-only",
             "primary_demo_mode": "CPU desktop demo",
             "training_setup": "Speech Commands + HI-MIA negatives, stable selection profile",
@@ -105,7 +105,7 @@ def _build_version_rows(v2: dict[str, Any], v3: dict[str, Any]) -> list[dict[str
             "status": "public-safe CPU baseline",
         },
         {
-            "version": "v3 (current release candidate)",
+            "version": "v3 (main / v3.0.0)",
             "core_stack": "detector gate + AST/SUPERB external ensemble",
             "primary_demo_mode": "accuracy-first desktop demo on MPS",
             "training_setup": "imported HF verifier/teacher + realtime validator + public release assets",

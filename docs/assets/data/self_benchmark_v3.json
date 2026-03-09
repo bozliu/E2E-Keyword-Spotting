@@ -36,7 +36,7 @@
     "min_kws12_precision": 0.9675090252707581,
     "min_kws12_recall": 0.9575289575289575,
     "unknown_to_target_rate": 0.0021087160262417996,
-    "latency_ms": 46.95397499999672,
+    "latency_ms": 30.338362499969662,
     "device": "mps"
   },
   {

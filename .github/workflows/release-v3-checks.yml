@@ -24,7 +24,7 @@ jobs:
       - name: Install package
         shell: bash -l {0}
         run: |
-          conda run -n dl python -m pip install -e .
+          conda run -n dl python -m pip install -e . pytest "gradio>=5.20,<6"
 
       - name: Syntax checks
         shell: bash -l {0}

@@ -39,23 +39,29 @@ This script checks:
 
 ## Git / PR / tag flow
 
-This repository currently needs a first clean tracked history. Use the following flow:
+Use the following flow for the public `v3` release:
 
 ```bash
-git switch -c codex/release-v3
+git fetch origin
+git switch main
+git pull origin main
+git tag -a v2.0.0 origin/main -m "Public v2 snapshot before the v3 merge"
+git push origin v2.0.0
+
+git switch -c v3
 git add README.md docs .github scripts src tests pyproject.toml environment.yml requirements-space.txt app.py .gitignore
 git commit -m "Prepare v3 public release"
-git remote add origin https://github.com/bozliu/E2E-Keyword-Spotting.git
-git push -u origin codex/release-v3
+git push -u origin v3
 ```
 
 Then:
 
-1. Open a PR from `codex/release-v3` into `main`.
-2. Let `release-v3-checks` and any demo deployment checks pass.
-3. Merge the PR.
-4. Create tag `v3.0.0`.
-5. Create a GitHub Release from that tag.
+1. Open a PR from `v3` into `main`.
+2. Let `core-release-checks` and `smoke-tests` pass.
+3. Protect `main` before merge: no force push, no delete, PR-only merge, required checks enabled.
+4. Merge the PR so `main` now points at the v3 content.
+5. Create tag `v3.0.0` on the merged `main` head.
+6. Create a GitHub Release from `v3.0.0`.
 
 ## GitHub Release assets
 

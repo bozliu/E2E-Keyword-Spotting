@@ -35,8 +35,8 @@ This table is intentionally conservative. It separates what is already proven fr
 | Version | Core stack | Primary demo mode | Training / release setup | Eval protocol | Min per-class precision | Min per-class recall | Unknown->target rate | Latency | Status |
 | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `v1 (2021 legacy)` | archived end-to-end KWS prototype | historical local script | legacy codebase, not reproduced in this repo | not rebenchmarked | `-` | `-` | `-` | `-` | Historical reference only |
-| `v2 (recent main)` | `MHAtt-CRNN` detector-only | CPU desktop demo | Speech Commands + HI-MIA negatives, stable selection profile | current local protocol, selection validation | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` CPU | Public-safe CPU baseline |
-| `v3 (current RC)` | detector gate + `AST/SUPERB` external ensemble | accuracy-first desktop demo on `MPS` | imported HF verifier/teacher + realtime validator + public-release assets | full `valid/test` local command-label protocol | `95.44%` | `95.38%` | `0.43%` | `55.64 ms` MPS | Offline acceptance passed |
+| `v2 (v2.0.0 tag)` | `MHAtt-CRNN` detector-only | CPU desktop demo | Speech Commands + HI-MIA negatives, stable selection profile | current local protocol, selection validation | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` CPU | Public-safe CPU baseline |
+| `v3 (main / v3.0.0)` | detector gate + `AST/SUPERB` external ensemble | accuracy-first desktop demo on `MPS` | imported HF verifier/teacher + realtime validator + public-release assets | full `valid/test` local command-label protocol | `95.44%` | `95.38%` | `0.43%` | `55.64 ms` MPS | Offline acceptance passed |
 
 What this means:
 

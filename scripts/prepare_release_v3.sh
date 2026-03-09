@@ -75,10 +75,10 @@ fi
 
 cat <<'EOF'
 [prepare_release_v3] Next git/release steps
-1. git switch -c codex/release-v3
+1. git switch -c v3
 2. git add README.md docs .github scripts src tests pyproject.toml environment.yml requirements-space.txt app.py .gitignore
 3. git commit -m "Prepare v3 public release"
-4. git remote add origin https://github.com/bozliu/E2E-Keyword-Spotting.git
-5. git push -u origin codex/release-v3
-6. Open a PR to main, let CI pass, then tag v3.0.0 after merge
+4. git push -u origin v3
+5. Tag the current main head as v2.0.0 before merging
+6. Open a PR from v3 to main, let CI pass, then tag the merged main head as v3.0.0
 EOF
