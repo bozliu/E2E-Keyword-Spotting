@@ -1,6 +1,6 @@
 # E2E Keyword Spotting v3
 
-`v3` is the public-release candidate of this repository: a release-focused rebuild of the older end-to-end keyword spotting project, now organized around reproducible benchmarks, a CPU-safe baseline demo, and an `accuracy-first` desktop demo that uses an imported Hugging Face ensemble on Apple MPS.
+`v3` is the current public release of this repository: a release-focused rebuild of the older end-to-end keyword spotting project, now organized around reproducible benchmarks, a CPU-safe baseline demo, and an `accuracy-first` desktop demo that uses an imported Hugging Face ensemble on Apple MPS.
 
 The short version:
 
@@ -16,9 +16,9 @@ The short version:
 - `v3 accuracy-first desktop demo`
   - detector gate + external `AST + SUPERB` ensemble
   - requires Apple `MPS`
-- `HF Space / web demo`
-  - browser microphone flow for non-technical users
-  - currently kept separate from the `accuracy-first` desktop path
+- `Hosted browser demo`
+  - currently retired from public hosting because it only exposed the lightweight CPU path
+  - the released public artifact is the `v3` model repo rather than a live HF Space
 
 ## Release Status
 
@@ -35,7 +35,7 @@ This table is intentionally conservative. It separates what is already proven fr
 | Version | Core stack | Primary demo mode | Training / release setup | Eval protocol | Min per-class precision | Min per-class recall | Unknown->target rate | Latency | Status |
 | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
 | `v1 (2021 legacy)` | archived end-to-end KWS prototype | historical local script | legacy codebase, not reproduced in this repo | not rebenchmarked | `-` | `-` | `-` | `-` | Historical reference only |
-| `v2 (v2.0.0 tag)` | `MHAtt-CRNN` detector-only | CPU desktop demo | Speech Commands + HI-MIA negatives, stable selection profile | current local protocol, selection validation | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` CPU | Public-safe CPU baseline |
+| `v2 (branch + v2.0.0 tag)` | `MHAtt-CRNN` detector-only | CPU desktop demo | Speech Commands + HI-MIA negatives, stable selection profile | current local protocol, selection validation | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` CPU | Public-safe CPU baseline |
 | `v3 (main / v3.0.0)` | detector gate + `AST/SUPERB` external ensemble | accuracy-first desktop demo on `MPS` | imported HF verifier/teacher + realtime validator + public-release assets | full `valid/test` local command-label protocol | `95.44%` | `95.38%` | `0.43%` | `55.64 ms` MPS | Offline acceptance passed |
 
 What this means:
@@ -157,7 +157,6 @@ Current public interpretation:
 ## Public Demo And Release Assets
 
 - GitHub repo: [bozliu/E2E-Keyword-Spotting](https://github.com/bozliu/E2E-Keyword-Spotting)
-- Hugging Face Space demo: [bozliu/e2e-keyword-spotting-demo](https://huggingface.co/spaces/bozliu/e2e-keyword-spotting-demo)
 - Public release process: [`docs/public_release_v3.md`](docs/public_release_v3.md)
 - Browser demo checklist: [`docs/public_demo_release_checklist.md`](docs/public_demo_release_checklist.md)
 
@@ -166,7 +165,13 @@ Recommended hosting split:
 - GitHub: source code, figures, cleaned metrics, release notes, demo GIF/MP4
 - GitHub Releases: our own checkpoints and calibration files
 - Hugging Face model repo: model card + our release artifacts
-- Hugging Face Space: optional browser CPU demo
+- Hugging Face Space: not currently published; re-enable only if we ship a browser path that matches the current public story
+
+Version navigation:
+
+- `legacy-v1` keeps the 2021 historical line browseable.
+- `v2` is the read-only archive branch for the former `main`, with `v2.0.0` as the canonical frozen snapshot.
+- `main` is the current `v3` public line, tagged at `v3.0.0`.
 
 Do not upload raw Speech Commands or HI-MIA audio.
 

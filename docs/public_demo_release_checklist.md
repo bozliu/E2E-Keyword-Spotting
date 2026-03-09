@@ -1,6 +1,11 @@
 # Public Demo Release Checklist
 
 This checklist is for the hosted browser demo only.
+
+Current status:
+
+- no public Hugging Face Space is kept live right now
+- use this checklist only if the hosted browser demo is re-enabled in a future release
 For the broader `v3` repo release flow, see [`docs/public_release_v3.md`](public_release_v3.md).
 
 ## Before deployment

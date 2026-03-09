@@ -75,10 +75,10 @@ fi
 
 cat <<'EOF'
 [prepare_release_v3] Next git/release steps
-1. git switch -c v3
-2. git add README.md docs .github scripts src tests pyproject.toml environment.yml requirements-space.txt app.py .gitignore
-3. git commit -m "Prepare v3 public release"
-4. git push -u origin v3
-5. Tag the current main head as v2.0.0 before merging
-6. Open a PR from v3 to main, let CI pass, then tag the merged main head as v3.0.0
+1. Ensure the public topology is legacy-v1 / v2 / main
+2. Keep v2 as a read-only branch that matches the v2.0.0 snapshot
+3. Remove legacy public aliases such as v2.0-public after checkpoint URLs are migrated
+4. Regenerate docs/assets and commit the release-doc updates
+5. Let core-release-checks and smoke-tests pass on main
+6. Keep v3.0.0 as the tag for the current public main line
 EOF

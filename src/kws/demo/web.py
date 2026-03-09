@@ -45,7 +45,8 @@ from kws.demo.web_runtime import (
 from kws.models import create_model
 from kws.utils.keyword_focus import DEFAULT_RUNTIME_CONFUSION_GROUPS, load_keyword_calibration
 
-PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0-public"
+PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0.0"
+LEGACY_PUBLIC_RELEASE_BASE = "https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0-public"
 PUBLIC_CHECKPOINTS: Dict[str, Dict[str, str]] = {
     "demo_mhatt_small_focus_lod": {
         "filename": "demo_mhatt_small_focus_lod_best_kws12.pt",
@@ -187,9 +188,13 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _checkpoint_url(name: str) -> str:
+def _checkpoint_urls(name: str) -> list[str]:
     meta = PUBLIC_CHECKPOINTS[name]
-    return f"{PUBLIC_RELEASE_BASE}/{meta['filename']}"
+    return [
+        f"{PUBLIC_RELEASE_BASE}/{meta['filename']}",
+        # Temporary compatibility fallback while the legacy public alias is being retired remotely.
+        f"{LEGACY_PUBLIC_RELEASE_BASE}/{meta['filename']}",
+    ]
 
 
 def ensure_public_checkpoint(name: str = DEFAULT_PUBLIC_CHECKPOINT, cache_dir: str | Path = DEFAULT_SPACE_CACHE_DIR) -> Path:
@@ -202,16 +207,27 @@ def ensure_public_checkpoint(name: str = DEFAULT_PUBLIC_CHECKPOINT, cache_dir: s
     if target.exists() and _sha256(target) == meta["sha256"]:
         return target
 
-    url = _checkpoint_url(name)
     fd, raw_tmp = tempfile.mkstemp(prefix=f"{target.stem}.", suffix=".download", dir=str(cache_root))
     os.close(fd)
     tmp_path = Path(raw_tmp)
+    last_error: Exception | None = None
     try:
-        with urllib.request.urlopen(url) as response, tmp_path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-        if _sha256(tmp_path) != meta["sha256"]:
-            raise RuntimeError(f"Checksum mismatch while downloading {name} from {url}")
-        os.replace(tmp_path, target)
+        for url in _checkpoint_urls(name):
+            try:
+                with urllib.request.urlopen(url) as response, tmp_path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+                if _sha256(tmp_path) != meta["sha256"]:
+                    raise RuntimeError(f"Checksum mismatch while downloading {name} from {url}")
+                os.replace(tmp_path, target)
+                break
+            except Exception as exc:  # pragma: no cover - network-dependent fallback
+                last_error = exc
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+        else:
+            raise RuntimeError(f"Unable to download {name} from the public release URLs") from last_error
     finally:
         if tmp_path.exists():
             try:

@@ -93,7 +93,7 @@ def _build_version_rows(v2: dict[str, Any], v3: dict[str, Any]) -> list[dict[str
             "status": "historical reference only",
         },
         {
-            "version": "v2 (v2.0.0 tag)",
+            "version": "v2 (branch + v2.0.0 tag)",
             "core_stack": "MHAtt-CRNN detector-only",
             "primary_demo_mode": "CPU desktop demo",
             "training_setup": "Speech Commands + HI-MIA negatives, stable selection profile",

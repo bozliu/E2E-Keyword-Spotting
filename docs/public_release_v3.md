@@ -39,29 +39,27 @@ This script checks:
 
 ## Git / PR / tag flow
 
-Use the following flow for the public `v3` release:
+Use the following flow to preserve a clean public version topology:
 
 ```bash
 git fetch origin
 git switch main
 git pull origin main
+git branch v2 v2.0.0
+git push origin v2
+
 git tag -a v2.0.0 origin/main -m "Public v2 snapshot before the v3 merge"
 git push origin v2.0.0
-
-git switch -c v3
-git add README.md docs .github scripts src tests pyproject.toml environment.yml requirements-space.txt app.py .gitignore
-git commit -m "Prepare v3 public release"
-git push -u origin v3
 ```
 
 Then:
 
-1. Open a PR from `v3` into `main`.
-2. Let `core-release-checks` and `smoke-tests` pass.
-3. Protect `main` before merge: no force push, no delete, PR-only merge, required checks enabled.
-4. Merge the PR so `main` now points at the v3 content.
-5. Create tag `v3.0.0` on the merged `main` head.
-6. Create a GitHub Release from `v3.0.0`.
+1. Keep `v2` as a read-only archive branch and `v2.0.0` as the canonical v2 tag.
+2. Let `core-release-checks` and `smoke-tests` pass on `main`.
+3. Protect `v2` and `main`: no force push, no delete, required checks on `main`.
+4. Keep `main` as the public `v3` line and `v3.0.0` as the matching release tag.
+5. Remove legacy alias tags and URLs such as `v2.0-public` once all public references have moved to `v2.0.0`.
+6. Create or refresh the GitHub Release from `v3.0.0`.
 
 ## GitHub Release assets
 
@@ -88,7 +86,13 @@ Recommended split:
 
 - GitHub: source code, README, release notes, figures, GIF, cleaned metrics
 - Hugging Face model repo: our checkpoint(s), calibration, model card, usage notes
-- Hugging Face Space: optional browser demo, if we keep the CPU public demo path alive
+- Hugging Face Space: currently unpublished; only re-enable it if the hosted path matches the current public release story
+
+If a hosted browser demo is re-enabled later, keep only one public Space entrypoint:
+
+- `bozliu/e2e-keyword-spotting-demo`
+
+Do not keep preview, smoke, or fresh-clone Spaces public.
 
 For `ensemble/ast-superb-kws12`, publish:
 

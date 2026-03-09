@@ -80,6 +80,12 @@ def test_normalize_audio_input_accepts_file_payload(tmp_path: Path) -> None:
     assert loaded.size == waveform.size
 
 
+def test_public_checkpoint_urls_prefer_canonical_release_tag() -> None:
+    urls = web._checkpoint_urls("demo_mhatt_small_focus")
+    assert urls[0].startswith("https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0.0/")
+    assert urls[1].startswith("https://github.com/bozliu/E2E-Keyword-Spotting/releases/download/v2.0-public/")
+
+
 def test_predict_web_clip_returns_friendly_unknown_for_no_signal() -> None:
     bundle = web.LoadedWebDemo(
         checkpoint_path=Path("dummy.pt"),
