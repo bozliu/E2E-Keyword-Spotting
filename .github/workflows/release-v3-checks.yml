@@ -48,10 +48,32 @@ jobs:
             tests/test_demo_web.py \
             tests/test_training_smoke.py
 
-      - name: Generate public release assets
+      - name: Validate checked-in public release assets
         shell: bash -l {0}
         run: |
-          conda run --no-capture-output -n dl python scripts/generate_release_assets.py
+          conda run --no-capture-output -n dl python - <<'PY'
+          import json
+          from pathlib import Path
+
+          required = [
+              Path("README.md"),
+              Path("docs/assets/per_class_valid_test.png"),
+              Path("docs/assets/latency_vs_accuracy.png"),
+              Path("docs/assets/realtime_accuracy_first_demo.gif"),
+              Path("docs/assets/data/release_summary_v3.json"),
+              Path("docs/assets/data/self_benchmark_v3.json"),
+              Path("docs/assets/data/version_comparison_v1_v2_v3.json"),
+              Path("docs/assets/data/sota_reference_table.json"),
+              Path("docs/assets/data/realtime_status.json"),
+          ]
+          missing = [str(path) for path in required if not path.exists()]
+          if missing:
+              raise SystemExit(f"Missing public release assets: {missing}")
+          summary = json.loads(Path("docs/assets/data/release_summary_v3.json").read_text(encoding="utf-8"))
+          if summary["headline"]["model"] != "ensemble/ast-superb-kws12":
+              raise SystemExit("Unexpected release summary headline model")
+          print("checked-in release assets look consistent")
+          PY
 
       - name: Upload release asset previews
         uses: actions/upload-artifact@v4
