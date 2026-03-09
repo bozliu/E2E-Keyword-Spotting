@@ -99,6 +99,17 @@ Prefer visuals that help a public reader understand behavior:
 - latency vs quality chart
 - a short GIF or MP4 of realtime inference
 
+Recommended command for the GIF:
+
+```bash
+conda run -n dl python scripts/render_release_demo_gif.py \
+  --label go \
+  --split test \
+  --checkpoint auto \
+  --device mps \
+  --external-kws-device mps
+```
+
 Avoid:
 
 - raw terminal screenshots

@@ -52,7 +52,7 @@ def _pick_record(label: str, split: str, max_search: int, device: str) -> dict[s
     for rec in records:
         if rec.command_label is None or int(rec.command_label) == IGNORE_INDEX:
             continue
-        kws12 = command31_to_kws12(INDEX_TO_COMMAND31[int(rec.command_label)])
+        kws12 = KWS12_LABELS[command31_to_kws12(INDEX_TO_COMMAND31[int(rec.command_label)])]
         if kws12 != label:
             continue
         candidates.append(rec)

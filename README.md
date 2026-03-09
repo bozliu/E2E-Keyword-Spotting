@@ -69,6 +69,10 @@ This figure shows `precision` and `recall` for every `KWS12` class on both `vali
 
 This figure shows the tradeoff that matters for release positioning. `v2` is much faster on CPU, but it does not clear the worst-class `95%` target. `v3` moves to the right because it uses an external ensemble on `MPS`, but it is the first configuration that reaches the quality target on this local protocol.
 
+![Realtime accuracy-first demo example](docs/assets/realtime_accuracy_first_demo.gif)
+
+This GIF is a real streamed inference example, rendered from the same `RealtimeEngine` that powers the desktop validator. It is a good public-facing visualization because it shows the utterance window, the emitted label, the gate state, and the runtime latency all in one place. The clip metadata is tracked in [`docs/assets/data/realtime_demo_clip.json`](docs/assets/data/realtime_demo_clip.json).
+
 ## Benchmark vs Ourselves
 
 | Method | Split / protocol | Metric scope | Min precision | Min recall | Unknown->target rate | Latency | Device |
@@ -197,6 +201,17 @@ conda run -n dl python -m kws.benchmark_external \
 
 ```bash
 conda run -n dl python scripts/generate_release_assets.py
+```
+
+### Render a release GIF from the realtime engine
+
+```bash
+conda run -n dl python scripts/render_release_demo_gif.py \
+  --label go \
+  --split test \
+  --checkpoint auto \
+  --device mps \
+  --external-kws-device mps
 ```
 
 ### Run the local release gate

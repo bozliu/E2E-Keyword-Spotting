@@ -1,0 +1,12 @@
+{
+  "label": "go",
+  "split": "test",
+  "sample_rate": 16000,
+  "utterance_bounds_seconds": [
+    2.4,
+    3.37
+  ],
+  "model_id": "ensemble/ast-superb-kws12",
+  "runtime_device": "mps",
+  "num_frames": 27
+}
