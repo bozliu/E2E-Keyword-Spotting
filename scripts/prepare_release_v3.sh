@@ -34,7 +34,7 @@ conda run -n dl python -m py_compile \
   src/kws/demo/validate_realtime.py
 
 echo "[prepare_release_v3] Running release test subset"
-conda run --no-capture-output -n dl pytest -q \
+conda run --no-capture-output -n dl python -m pytest -q \
   tests/test_external_hf_kws.py \
   tests/test_demo_accuracy_first.py \
   tests/test_validate_realtime.py \

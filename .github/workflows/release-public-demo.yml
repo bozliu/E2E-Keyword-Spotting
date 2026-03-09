@@ -35,7 +35,7 @@ jobs:
       - name: Install package and Space deps
         shell: bash -l {0}
         run: |
-          conda run -n dl python -m pip install -e .
+          conda run -n dl python -m pip install -e . pytest
           conda run -n dl python -m pip install -r requirements-space.txt
 
       - name: Syntax checks
@@ -47,7 +47,7 @@ jobs:
       - name: Run targeted tests
         shell: bash -l {0}
         run: |
-          conda run --no-capture-output -n dl pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py
+          conda run --no-capture-output -n dl python -m pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py
 
       - name: Run web smoke inference
         shell: bash -l {0}

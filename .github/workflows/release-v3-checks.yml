@@ -39,7 +39,7 @@ jobs:
       - name: Run release test subset
         shell: bash -l {0}
         run: |
-          conda run --no-capture-output -n dl pytest -q \
+          conda run --no-capture-output -n dl python -m pytest -q \
             tests/test_external_hf_kws.py \
             tests/test_demo_accuracy_first.py \
             tests/test_validate_realtime.py \

@@ -19,7 +19,7 @@ PYV="$(conda run -n dl python -c 'import sys; print(f"{sys.version_info.major}.{
 [[ "$PYV" == "3.12" ]] || fail "dl must use Python 3.12, got $PYV"
 
 echo "[release_public_demo] Installing package and Space dependencies into dl"
-conda run -n dl python -m pip install -e . >/dev/null
+conda run -n dl python -m pip install -e . pytest >/dev/null
 conda run -n dl python -m pip install -r requirements-space.txt >/dev/null
 
 echo "[release_public_demo] Syntax checks"
@@ -27,7 +27,7 @@ conda run -n dl python -m py_compile app.py scripts/deploy_hf_space.py src/kws/d
 conda run --no-capture-output -n dl python -c "import app; print('import_ok')"
 
 echo "[release_public_demo] Running targeted tests"
-conda run --no-capture-output -n dl pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py
+conda run --no-capture-output -n dl python -m pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py
 
 echo "[release_public_demo] Running web smoke inference"
 PYTHONPATH=src conda run --no-capture-output -n dl python - <<'PY'
