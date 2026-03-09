@@ -108,3 +108,52 @@ def test_run_epoch_supports_teacher_distillation() -> None:
     )
 
     assert result.loss >= 0.0
+
+
+def test_run_epoch_supports_imported_teacher_distillation() -> None:
+    class _DummyImportedTeacherCache:
+        def load_targets(self, paths, *, device):  # noqa: ARG002
+            probs = torch.full((len(paths), 12), 1.0 / 12.0, dtype=torch.float32, device=device)
+            weights = torch.ones(len(paths), dtype=torch.float32, device=device)
+            mask = torch.zeros(len(paths), dtype=torch.bool, device=device)
+            return type(
+                "ImportedTargets",
+                (),
+                {
+                    "probs": probs,
+                    "sample_weights": weights,
+                    "agreement_mask": ~mask,
+                    "disagreement_mask": mask,
+                },
+            )()
+
+    model = create_model(
+        {"name": "mhatt_crnn", "conv_channels": 8, "gru_hidden": 16, "gru_layers": 1, "num_heads": 2, "dropout": 0.0},
+        n_mels=64,
+        num_commands=31,
+    )
+
+    features = torch.randn(4, 64, 126)
+    command_labels = torch.randint(0, 31, (4,))
+    wake_labels = torch.randint(0, 2, (4,), dtype=torch.float32)
+    batch = Batch(features=features, command_labels=command_labels, wake_labels=wake_labels, paths=["a"] * 4, sources=["x"] * 4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    result = run_epoch(
+        model=model,
+        loader=[batch],
+        device=torch.device("cpu"),
+        optimizer=optimizer,
+        lambda_command=1.0,
+        lambda_kws12=0.3,
+        lambda_wake=1.0,
+        lambda_aux=0.1,
+        lambda_confusion=0.1,
+        aux_margin=0.2,
+        audio_seconds=1.0,
+        imported_teacher_cache=_DummyImportedTeacherCache(),
+        lambda_imported_logits=0.5,
+        imported_teacher_temperature=2.0,
+    )
+
+    assert result.loss >= 0.0

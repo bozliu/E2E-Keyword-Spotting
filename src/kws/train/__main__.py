@@ -15,6 +15,8 @@ import torch
 from kws.config import load_yaml
 from kws.constants import COMMAND31_LABELS
 from kws.data.pipeline import create_dataloaders, prepare_data
+from kws.env import ensure_repo_import, run_repo_preflight
+from kws.external import DEFAULT_EXTERNAL_AUX_MODEL_ID, DEFAULT_EXTERNAL_VERIFIER_MODEL_ID, ExternalKWSLogitCache
 from kws.models import create_model
 from kws.train.engine import pick_device, run_epoch
 from kws.train.teacher import TeacherHeads, WavLMFeatureCache
@@ -59,11 +61,63 @@ def _collect_validation_outputs(model: torch.nn.Module, loader, device: torch.de
     }
 
 
+def _build_manifest_names(cfg: Dict[str, object]) -> list[str]:
+    data_cfg = cfg.get("data", {}) if isinstance(cfg, dict) else {}
+    external_cfg = data_cfg.get("external", {}) if isinstance(data_cfg, dict) else {}
+    manifests = ["local_train.jsonl", "local_valid.jsonl", "local_test.jsonl"]
+    hi_cfg = external_cfg.get("hi_mia", {})
+    if isinstance(hi_cfg, dict) and bool(hi_cfg.get("enabled", False)):
+        manifests.extend(["hi_mia_train.jsonl", "hi_mia_valid.jsonl", "hi_mia_test.jsonl"])
+    mswc_cfg = external_cfg.get("mswc", {})
+    if isinstance(mswc_cfg, dict) and bool(mswc_cfg.get("enabled", False)):
+        manifests.extend(["mswc_train.jsonl", "mswc_valid.jsonl", "mswc_test.jsonl"])
+    return manifests
+
+
+def _stable_metric_tuple(metrics: Dict[str, float | object]) -> tuple[float, float, float, float]:
+    return (
+        float(metrics.get("min_kws12_precision", 0.0)),
+        float(metrics.get("min_kws12_recall", 0.0)),
+        -float(metrics.get("kws12_unknown_to_target_rate", 1.0)),
+        float(metrics.get("kws12_acc", 0.0)),
+    )
+
+
+def _build_imported_teacher_cache(
+    *,
+    cfg: Dict[str, object],
+    project_root: Path,
+    device: torch.device,
+) -> tuple[ExternalKWSLogitCache | None, Dict[str, object]]:
+    training_cfg = cfg.get("training", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(training_cfg, dict):
+        training_cfg = {}
+    imported_cfg = training_cfg.get("imported_teacher", {})
+    if not isinstance(imported_cfg, dict) or not bool(imported_cfg.get("enabled", False)):
+        return None, {}
+
+    features_cfg = cfg.get("features", {}) if isinstance(cfg, dict) else {}
+    sample_rate = int(features_cfg.get("sample_rate", 16_000)) if isinstance(features_cfg, dict) else 16_000
+    audio_seconds = float(features_cfg.get("audio_seconds", 1.0)) if isinstance(features_cfg, dict) else 1.0
+    cache = ExternalKWSLogitCache(
+        primary_model_id=str(imported_cfg.get("primary_model_id", DEFAULT_EXTERNAL_VERIFIER_MODEL_ID)),
+        aux_model_id=str(imported_cfg.get("aux_model_id", DEFAULT_EXTERNAL_AUX_MODEL_ID)).strip() or None,
+        cache_dir=(project_root / str(imported_cfg.get("cache_dir", "cache/imported_teacher"))).resolve(),
+        device=str(imported_cfg.get("device", str(device))),
+        clip_samples=int(round(audio_seconds * sample_rate)),
+        sample_rate=sample_rate,
+        agreement_weight=float(imported_cfg.get("agreement_weight", 0.25)),
+    )
+    return cache, imported_cfg
+
+
 def main() -> None:
     args = parse_args()
     bundle = load_yaml(args.config)
     cfg = bundle.raw
     project_root = bundle.path.parent.parent.resolve()
+    repo_root = Path(__file__).resolve().parents[3]
+    ensure_repo_import(repo_root)
 
     seed = int(args.seed if args.seed is not None else cfg.get("seed", 1337))
     set_seed(seed)
@@ -71,6 +125,15 @@ def main() -> None:
     device = pick_device(str(cfg["training"].get("device", "auto")))
 
     stats = prepare_data(cfg, project_root)
+    teacher_cfg = cfg.get("training", {}).get("teacher", {})
+    run_repo_preflight(
+        project_root,
+        manifests_dir=(project_root / cfg["data"]["manifests_dir"]).resolve(),
+        manifest_names=_build_manifest_names(cfg),
+        teacher_model_id=str(teacher_cfg.get("model_id", "")).strip() if isinstance(teacher_cfg, dict) and bool(teacher_cfg.get("enabled", False)) else None,
+        teacher_cache_dir=(project_root / str(teacher_cfg.get("cache_dir", ""))).resolve() if isinstance(teacher_cfg, dict) and bool(teacher_cfg.get("enabled", False)) and str(teacher_cfg.get("cache_dir", "")).strip() else None,
+        require_mps=str(cfg["training"].get("device", "auto")).strip().lower() == "mps",
+    )
     dataloaders = create_dataloaders(cfg, project_root)
 
     model = create_model(
@@ -79,7 +142,6 @@ def main() -> None:
         num_commands=len(COMMAND31_LABELS),
     ).to(device)
 
-    teacher_cfg = cfg.get("training", {}).get("teacher", {})
     teacher_enabled = bool(teacher_cfg.get("enabled", False))
     teacher_cache = None
     teacher_heads = None
@@ -99,6 +161,13 @@ def main() -> None:
             num_commands=len(COMMAND31_LABELS),
             dropout=float(teacher_cfg.get("dropout", 0.1)),
         ).to(device)
+    imported_teacher_cache, imported_teacher_cfg = _build_imported_teacher_cache(
+        cfg=cfg,
+        project_root=project_root,
+        device=device,
+    )
+    lambda_imported_logits = float(imported_teacher_cfg.get("logits_weight", 0.0)) if imported_teacher_cfg else 0.0
+    imported_teacher_temperature = float(imported_teacher_cfg.get("temperature", 2.0)) if imported_teacher_cfg else 2.0
 
     optimizer_name = str(cfg["training"].get("optimizer", "adamw")).lower()
     lr = float(cfg["training"].get("lr", 1e-3))
@@ -146,7 +215,7 @@ def main() -> None:
     ce_weight = float(keyword_focus_cfg.get("ce_weight", 1.5))
     keyword_ce_weights = {str(keyword): ce_weight for keyword in weak_keywords}
 
-    best_kws12 = -1.0
+    best_stable = (-1.0, -1.0, -1.0, -1.0)
     best_frr = float("inf")
     history_path = output_dir / "metrics_history.jsonl"
 
@@ -170,6 +239,9 @@ def main() -> None:
             lambda_distill_embed=lambda_distill_embed,
             keyword_ce_weights=keyword_ce_weights,
             confusion_groups=confusion_groups,
+            imported_teacher_cache=imported_teacher_cache,
+            lambda_imported_logits=lambda_imported_logits,
+            imported_teacher_temperature=imported_teacher_temperature,
         )
         valid_result = run_epoch(
             model=model,
@@ -190,6 +262,9 @@ def main() -> None:
             lambda_distill_embed=0.0,
             keyword_ce_weights=keyword_ce_weights,
             confusion_groups=confusion_groups,
+            imported_teacher_cache=None,
+            lambda_imported_logits=0.0,
+            imported_teacher_temperature=imported_teacher_temperature,
         )
 
         scheduler.step(float(valid_result.metrics.get("kws12_acc", 0.0)))
@@ -220,8 +295,9 @@ def main() -> None:
 
         kws12_acc = float(valid_result.metrics.get("kws12_acc", 0.0))
         frr = float(valid_result.metrics.get("wake_frr_at_1fa_per_hour", 1.0))
-        if kws12_acc > best_kws12:
-            best_kws12 = kws12_acc
+        stable_tuple = _stable_metric_tuple(valid_result.metrics)
+        if stable_tuple > best_stable:
+            best_stable = stable_tuple
             collected = _collect_validation_outputs(model, dataloaders.valid, device)
             keyword_focus = build_keyword_focus_report(
                 collected["preds"],

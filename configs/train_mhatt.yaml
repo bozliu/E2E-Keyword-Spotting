@@ -1,5 +1,5 @@
 seed: 1337
-run_name: mhatt_public_full
+run_name: mhatt_submission
 
 model:
   name: mhatt_crnn
@@ -24,7 +24,7 @@ data:
     speech_commands_split: data/local/speech_commands_split
     silence_ratio: 0.10
     limit_per_class: null
-    optional_test_mirror: data/optional/speech_commands_mirror
+    xiaomi_mirror: data/legacy/KWS/XiaoMi/speech_commands
   external:
     hi_mia:
       enabled: true

@@ -6,13 +6,24 @@ from typing import Dict
 
 from torch import nn
 
-from kws.models.keyword_mamba import KeywordMambaNet
-from kws.models.mhatt_crnn import MHAttCRNNNet
-
 
 def create_model(model_cfg: Dict[str, object], n_mels: int, num_commands: int) -> nn.Module:
     name = str(model_cfg["name"]).lower()
+    if name == "kws12_verifier":
+        from kws.models.kws12_verifier import KWS12VerifierNet
+
+        return KWS12VerifierNet(
+            n_mels=n_mels,
+            num_commands=num_commands,
+            conv_channels=int(model_cfg.get("conv_channels", 32)),
+            num_blocks=int(model_cfg.get("num_blocks", 3)),
+            attn_dim=int(model_cfg.get("attn_dim", 96)),
+            num_heads=int(model_cfg.get("num_heads", 4)),
+            dropout=float(model_cfg.get("dropout", 0.15)),
+        )
     if name == "keyword_mamba":
+        from kws.models.keyword_mamba import KeywordMambaNet
+
         return KeywordMambaNet(
             n_mels=n_mels,
             num_commands=num_commands,
@@ -24,6 +35,8 @@ def create_model(model_cfg: Dict[str, object], n_mels: int, num_commands: int) -
             dropout=float(model_cfg.get("dropout", 0.1)),
         )
     if name == "mhatt_crnn":
+        from kws.models.mhatt_crnn import MHAttCRNNNet
+
         return MHAttCRNNNet(
             n_mels=n_mels,
             num_commands=num_commands,

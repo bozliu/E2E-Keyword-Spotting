@@ -8,7 +8,7 @@ import torch
 import torchaudio
 
 from kws.constants import COMMAND31_TO_INDEX, SILENCE_LABEL
-from kws.data.local_speech_commands import build_local_manifests, detect_optional_test_mirror
+from kws.data.local_speech_commands import build_local_manifests, detect_xiaomi_test_mirror
 
 
 def _write_wav(path: Path, sr: int = 16000, seconds: float = 1.0) -> None:
@@ -31,11 +31,11 @@ def test_local_manifest_and_mirror_detection(tmp_path: Path) -> None:
     assert len(manifests["train"]) > 0
     assert any(r.command_label == COMMAND31_TO_INDEX[SILENCE_LABEL] for r in manifests["train"])
 
-    mirror = tmp_path / "mirror"
-    _write_wav(mirror / "yes" / "yes_test.wav")
+    xiaomi = tmp_path / "xiaomi"
+    _write_wav(xiaomi / "yes" / "yes_test.wav")
     # copy a matching key from test split
     src = root / "test" / "yes" / "yes_test.wav"
     _write_wav(src)
 
-    stats = detect_optional_test_mirror(manifests["test"], mirror)
-    assert stats["mirror_files"] >= 1
+    stats = detect_xiaomi_test_mirror(manifests["test"], xiaomi)
+    assert stats["xiaomi_files"] >= 1

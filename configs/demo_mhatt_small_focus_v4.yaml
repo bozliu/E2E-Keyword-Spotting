@@ -1,0 +1,111 @@
+seed: 1337
+run_name: demo_mhatt_small_focus_v4
+
+model:
+  name: mhatt_crnn
+  conv_channels: 24
+  gru_hidden: 96
+  gru_layers: 1
+  num_heads: 2
+  dropout: 0.15
+
+features:
+  sample_rate: 16000
+  audio_seconds: 1.0
+  n_fft: 1024
+  hop_length: 128
+  n_mels: 80
+  f_min: 20.0
+  f_max: 7600.0
+
+data:
+  manifests_dir: data/processed/manifests
+  local:
+    speech_commands_split: data/local/speech_commands_split
+    silence_ratio: 0.10
+    limit_per_class: 640
+    xiaomi_mirror: data/legacy/KWS/XiaoMi/speech_commands
+  external:
+    hi_mia:
+      enabled: false
+      root: data/external/hi_mia
+      limit_per_split: null
+      require_full: false
+    mswc:
+      enabled: false
+      root: data/external/mswc
+      metadata_file: metadata.csv
+      audio_root: clips
+      limit_per_word: null
+    l2_arctic_eval:
+      enabled: false
+      root: data/external/l2_arctic
+      speaker_metadata_file: speaker_metadata.csv
+      limit_per_word: null
+
+training:
+  device: mps
+  output_dir: outputs
+  epochs: 14
+  batch_size: 128
+  num_workers: 0
+  augment:
+    enabled: true
+    speed_factors: [0.9, 1.0, 1.1]
+    loudness_min: 0.65
+    loudness_max: 1.35
+    max_shift_frac: 0.2
+    gaussian_noise_scale: 0.005
+    background_mix_prob: 0.35
+    background_snr_min_db: 6.0
+    background_snr_max_db: 20.0
+    reverb_prob: 0.2
+    reverb_decay: 18.0
+    specaugment_time_masks: 2
+    specaugment_time_width: 10
+    specaugment_freq_masks: 2
+    specaugment_freq_width: 8
+  teacher:
+    enabled: true
+    model_id: microsoft/wavlm-base-plus
+    cache_dir: cache/wavlm_teacher
+    dropout: 0.1
+  imported_teacher:
+    enabled: true
+    primary_model_id: superb/wav2vec2-base-superb-ks
+    aux_model_id: MIT/ast-finetuned-speech-commands-v2
+    cache_dir: cache/imported_teacher
+    device: mps
+    temperature: 2.0
+    logits_weight: 0.50
+    agreement_weight: 0.25
+  optimizer: adamw
+  lr: 0.001
+  weight_decay: 0.0001
+  lr_gamma: 0.5
+  lr_patience: 2
+  loss_weights:
+    command: 1.0
+    kws12: 0.35
+    wake: 1.0
+    aux: 0.05
+    confusion: 0.10
+    distill_logits: 0.35
+    distill_embed: 0.15
+  keyword_focus:
+    top_k: 5
+    weak_keywords: ["on", "no", "off", down, go]
+    ce_weight: 1.5
+    oversample_factor: 2.5
+    confusion_factor: 2.0
+    confusion_groups:
+      "on": ["off", up]
+      "no": [go, down]
+      "off": [up, "on"]
+      down: [go, "no"]
+      go: ["no", down, up]
+      left: [right]
+      right: [left]
+  calibration:
+    per_keyword: true
+  aux_margin: 0.2

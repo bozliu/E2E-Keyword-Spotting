@@ -1,0 +1,38 @@
+[
+  {
+    "version": "v1 (2021 legacy)",
+    "core_stack": "archived end-to-end KWS prototype",
+    "primary_demo_mode": "historical local script",
+    "training_setup": "legacy codebase, not reproduced in this repo",
+    "eval_protocol": "not rebenchmarked in March 2026 repo",
+    "min_per_class_precision": null,
+    "min_per_class_recall": null,
+    "unknown_to_target_rate": null,
+    "latency_ms": null,
+    "status": "historical reference only"
+  },
+  {
+    "version": "v2 (v2.0.0 tag)",
+    "core_stack": "MHAtt-CRNN detector-only",
+    "primary_demo_mode": "CPU desktop demo",
+    "training_setup": "Speech Commands + HI-MIA negatives, stable selection profile",
+    "eval_protocol": "selection-time validation on current local protocol",
+    "min_per_class_precision": 0.904724716907458,
+    "min_per_class_recall": 0.8991074893286768,
+    "unknown_to_target_rate": 0.026710402999062792,
+    "latency_ms": 8.568062497943174,
+    "status": "public-safe CPU baseline"
+  },
+  {
+    "version": "v3 (main / v3.0.0)",
+    "core_stack": "detector gate + AST/SUPERB external ensemble",
+    "primary_demo_mode": "accuracy-first desktop demo on MPS",
+    "training_setup": "imported HF verifier/teacher + realtime validator + public release assets",
+    "eval_protocol": "full valid/test local command-label protocol",
+    "min_per_class_precision": 0.9543726235741445,
+    "min_per_class_recall": 0.9538461538461539,
+    "unknown_to_target_rate": 0.0042643923240938165,
+    "latency_ms": 55.6432291999954,
+    "status": "offline acceptance passed (quality=0.9538)"
+  }
+]

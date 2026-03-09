@@ -1,0 +1,73 @@
+name: release-public-demo
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app.py'
+      - 'requirements-space.txt'
+      - 'scripts/deploy_hf_space.py'
+      - 'scripts/release_public_demo.sh'
+      - 'space/**'
+      - 'src/kws/demo/web.py'
+      - 'tests/test_demo_web.py'
+      - '.github/workflows/release-public-demo.yml'
+
+jobs:
+  deploy-space:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          activate-environment: dl
+          environment-file: environment.yml
+          auto-activate-base: false
+          python-version: '3.12'
+
+      - name: Install package and Space deps
+        shell: bash -l {0}
+        run: |
+          conda run -n dl python -m pip install -e .
+          conda run -n dl python -m pip install -r requirements-space.txt
+
+      - name: Syntax checks
+        shell: bash -l {0}
+        run: |
+          conda run -n dl python -m py_compile app.py scripts/deploy_hf_space.py src/kws/demo/web.py
+          conda run --no-capture-output -n dl python -c "import app; print('import_ok')"
+
+      - name: Run targeted tests
+        shell: bash -l {0}
+        run: |
+          conda run --no-capture-output -n dl pytest -q tests/test_demo_web.py tests/test_demo*.py tests/test_keyword_focus*.py
+
+      - name: Run web smoke inference
+        shell: bash -l {0}
+        run: |
+          PYTHONPATH=src conda run --no-capture-output -n dl python - <<'PY'
+          import numpy as np
+          from kws.demo.web import load_web_demo, predict_web_clip
+          bundle = load_web_demo('auto')
+          out = predict_web_clip(bundle, (16000, np.zeros(16000, dtype=np.float32)))
+          assert hasattr(out, 'label') and hasattr(out, 'status_message') and hasattr(out, 'keyword_scores')
+          print('smoke_ok', out.label, out.status_message)
+          PY
+
+      - name: Validate deployment secrets
+        shell: bash -l {0}
+        run: |
+          test -n "$HF_TOKEN" || (echo 'Missing HF_TOKEN secret' && exit 1)
+          test -n "$HF_SPACE_ID" || (echo 'Missing HF_SPACE_ID variable' && exit 1)
+
+      - name: Deploy to Hugging Face Space
+        shell: bash -l {0}
+        run: |
+          conda run -n dl python scripts/deploy_hf_space.py --space-id "$HF_SPACE_ID"

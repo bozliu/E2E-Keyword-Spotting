@@ -70,11 +70,20 @@ def _weighted_cross_entropy(
     return F.cross_entropy(logits, targets, weight=class_weights, ignore_index=ignore_index)
 
 
-def _distill_kl(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperature: float = 2.0) -> torch.Tensor:
+def _distill_kl(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float = 2.0,
+    sample_weights: torch.Tensor | None = None,
+) -> torch.Tensor:
     temp = float(max(1e-3, temperature))
     student_log_probs = F.log_softmax(student_logits / temp, dim=-1)
     teacher_probs = F.softmax(teacher_logits.detach() / temp, dim=-1)
-    return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean") * (temp * temp)
+    if sample_weights is None:
+        return F.kl_div(student_log_probs, teacher_probs, reduction="batchmean") * (temp * temp)
+    per_item = F.kl_div(student_log_probs, teacher_probs, reduction="none").sum(dim=-1)
+    weights = sample_weights.to(device=student_logits.device, dtype=student_logits.dtype).reshape(-1)
+    return (per_item * weights).sum() / weights.sum().clamp(min=1e-6) * (temp * temp)
 
 
 @dataclass
@@ -116,6 +125,9 @@ def run_epoch(
     teacher_heads: Optional[TeacherHeads] = None,
     lambda_distill_logits: float = 0.0,
     lambda_distill_embed: float = 0.0,
+    imported_teacher_cache=None,
+    lambda_imported_logits: float = 0.0,
+    imported_teacher_temperature: float = 2.0,
     keyword_ce_weights: Mapping[str, float] | None = None,
     confusion_groups: Mapping[str, Sequence[str]] | None = None,
 ) -> EpochResult:
@@ -179,6 +191,7 @@ def run_epoch(
             )
             distill_logits_loss = output.embedding.new_tensor(0.0)
             distill_embed_loss = output.embedding.new_tensor(0.0)
+            imported_distill_loss = output.embedding.new_tensor(0.0)
             teacher_supervision_loss = output.embedding.new_tensor(0.0)
 
             if training and teacher_cache is not None and teacher_heads is not None:
@@ -196,6 +209,17 @@ def run_epoch(
                 teacher_embed = F.normalize(teacher_targets.projected_embedding.detach(), dim=-1)
                 distill_embed_loss = F.mse_loss(student_embed, teacher_embed)
 
+            if training and imported_teacher_cache is not None:
+                imported_targets = imported_teacher_cache.load_targets(batch.paths, device=device)
+                teacher_probs = imported_targets.probs.clamp(min=1e-6)
+                teacher_logits = torch.log(teacher_probs)
+                imported_distill_loss = _distill_kl(
+                    kws12_logits,
+                    teacher_logits,
+                    temperature=float(imported_teacher_temperature),
+                    sample_weights=imported_targets.sample_weights,
+                )
+
             loss = (
                 lambda_command * command_loss
                 + lambda_kws12 * kws12_loss
@@ -204,6 +228,7 @@ def run_epoch(
                 + lambda_confusion * confusion_loss
                 + lambda_distill_logits * distill_logits_loss
                 + lambda_distill_embed * distill_embed_loss
+                + lambda_imported_logits * imported_distill_loss
                 + 0.5 * teacher_supervision_loss
             )
 

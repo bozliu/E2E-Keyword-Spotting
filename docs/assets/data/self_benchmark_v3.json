@@ -1,0 +1,52 @@
+[
+  {
+    "label": "v2 stable detector-only",
+    "split": "selection validation",
+    "metric_scope": "min per-class precision/recall",
+    "min_kws12_precision": 0.904724716907458,
+    "min_kws12_recall": 0.8991074893286768,
+    "unknown_to_target_rate": 0.026710402999062792,
+    "latency_ms": 8.568062497943174,
+    "device": "cpu"
+  },
+  {
+    "label": "SUPERB imported model",
+    "split": "test",
+    "metric_scope": "min per-class precision/recall",
+    "min_kws12_precision": 0.7546583850931677,
+    "min_kws12_recall": 0.9427480916030534,
+    "unknown_to_target_rate": 0.048266166822867856,
+    "latency_ms": 39.68520420000914,
+    "device": "mps"
+  },
+  {
+    "label": "MIT AST imported model",
+    "split": "test",
+    "metric_scope": "min per-class precision/recall",
+    "min_kws12_precision": 0.0,
+    "min_kws12_recall": 0.0,
+    "unknown_to_target_rate": 0.0032802249297094657,
+    "latency_ms": 29.959908399996493,
+    "device": "mps"
+  },
+  {
+    "label": "v3 AST+SUPERB ensemble",
+    "split": "test",
+    "metric_scope": "min per-class precision/recall",
+    "min_kws12_precision": 0.9675090252707581,
+    "min_kws12_recall": 0.9575289575289575,
+    "unknown_to_target_rate": 0.0021087160262417996,
+    "latency_ms": 30.338362499969662,
+    "device": "mps"
+  },
+  {
+    "label": "v3 acceptance summary",
+    "split": "valid + test",
+    "metric_scope": "goal pass/fail snapshot",
+    "min_kws12_precision": 0.9543726235741445,
+    "min_kws12_recall": 0.9538461538461539,
+    "unknown_to_target_rate": 0.0042643923240938165,
+    "latency_ms": 55.6432291999954,
+    "device": "mps"
+  }
+]

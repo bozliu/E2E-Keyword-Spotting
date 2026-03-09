@@ -145,7 +145,14 @@ class WavLMFeatureCache:
                     "transformers is required for teacher distillation. "
                     "Install it or disable training.teacher.enabled."
                 ) from exc
-            encoder = AutoModel.from_pretrained(self.model_id)
+            try:
+                encoder = AutoModel.from_pretrained(self.model_id, use_safetensors=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to load the SSL teacher with safetensors. "
+                    "Use a safetensors-backed model id such as "
+                    "`facebook/wav2vec2-base-960h`, or disable teacher distillation."
+                ) from exc
 
         encoder = encoder.to(self.device)
         encoder.eval()

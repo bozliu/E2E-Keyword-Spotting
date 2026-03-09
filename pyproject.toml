@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "e2e-keyword-spotting"
+name = "kws-2026-submission"
 version = "0.1.0"
-description = "Public v2 release for lightweight end-to-end keyword spotting and realtime demo benchmarking"
+description = "Dual-task KWS submission with KeywordMamba + MHAtt-CRNN"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

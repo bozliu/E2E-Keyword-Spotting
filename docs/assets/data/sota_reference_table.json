@@ -1,0 +1,42 @@
+[
+  {
+    "method": "Ours v3 accuracy-first external ensemble",
+    "dataset_protocol": "Current local command-label protocol (valid + test)",
+    "headline_metric": "Min per-class precision / recall",
+    "value": "95.44% / 95.38%",
+    "source_type": "Reproduced in this repo",
+    "comparability": "Directly comparable only inside this repo"
+  },
+  {
+    "method": "Ours v2 stable detector-only",
+    "dataset_protocol": "Current local protocol selection validation",
+    "headline_metric": "Min per-class precision / recall",
+    "value": "90.47% / 89.91%",
+    "source_type": "Reproduced in this repo",
+    "comparability": "Directly comparable only inside this repo"
+  },
+  {
+    "method": "MatchboxNet-3x2x64",
+    "dataset_protocol": "Speech Commands V2 12-class closed-set classification",
+    "headline_metric": "Accuracy",
+    "value": "98.19%",
+    "source_type": "Reported in prior paper benchmarks",
+    "comparability": "Not directly comparable"
+  },
+  {
+    "method": "BC-ResNet",
+    "dataset_protocol": "Speech Commands V2 12-class closed-set classification",
+    "headline_metric": "Accuracy",
+    "value": "98.0%",
+    "source_type": "Reported in prior paper benchmarks",
+    "comparability": "Not directly comparable"
+  },
+  {
+    "method": "EdgeSpot (ICASSP 2026)",
+    "dataset_protocol": "Few-shot KWS at fixed FAR",
+    "headline_metric": "10-shot accuracy @ 1% FAR",
+    "value": "82.0%",
+    "source_type": "Reported in paper abstract",
+    "comparability": "Not directly comparable"
+  }
+]

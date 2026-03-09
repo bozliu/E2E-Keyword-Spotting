@@ -3,7 +3,7 @@
 ## Branch model
 - `main`: latest stable public release
 - `legacy-v1`: preserved thesis-era public version
-- `codex/update-final-public-release`: release-prep branch used for cleanup and review
+- `v3`: release-prep branch used for the current public update
 
 ## Suggested release flow
 
@@ -15,17 +15,20 @@ git push origin legacy-v1
 git tag -a v1.0-legacy origin/main -m "Legacy public version"
 git push origin v1.0-legacy
 
-git checkout -b codex/update-final-public-release origin/main
-# copy cleaned v2 tree, run checks, commit in logical chunks
+git tag -a v2.0.0 origin/main -m "Public v2 snapshot before v3"
+git push origin v2.0.0
 
-git push origin codex/update-final-public-release
+git checkout -b v3 origin/main
+# copy cleaned v3 tree, run checks, commit in logical chunks
+
+git push origin v3
 # open PR into main
 # merge after CI passes
 
 git checkout main
 git pull origin main
-git tag -a v2.0-public -m "Public v2 release"
-git push origin v2.0-public
+git tag -a v3.0.0 -m "Public v3 release"
+git push origin v3.0.0
 ```
 
 ## Pull request checklist
