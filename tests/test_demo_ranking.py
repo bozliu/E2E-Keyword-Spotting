@@ -20,6 +20,8 @@ def _write_run(
     focus_rate: float | None = None,
     bottom3: float | None = None,
     balance_gap: float | None = None,
+    min_precision: float | None = None,
+    min_recall: float | None = None,
 ) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = run_dir / "best_kws12.pt"
@@ -37,6 +39,8 @@ def _write_run(
         "epoch": 1,
         "valid_metrics": {
             "kws12_acc": float(acc),
+            "min_kws12_precision": float(min_precision if min_precision is not None else acc),
+            "min_kws12_recall": float(min_recall if min_recall is not None else recall),
             "kws12_target_recall": float(recall),
             "kws12_unknown_to_target_rate": float(unknown_rate),
             "focus_keyword_recall_mean": float(focus_recall if focus_recall is not None else recall),
@@ -49,6 +53,8 @@ def _write_run(
     (run_dir / "metrics_history.jsonl").write_text(json.dumps(metrics) + "\n", encoding="utf-8")
     analysis = {
         "metrics": metrics["valid_metrics"],
+        "min_kws12_precision": float(min_precision if min_precision is not None else acc),
+        "min_kws12_recall": float(min_recall if min_recall is not None else recall),
         "focus_keyword_recall_mean": float(focus_recall if focus_recall is not None else recall),
         "focus_pair_confusions": {},
         "focus_pair_confusion_rate": float(focus_rate if focus_rate is not None else unknown_rate),
@@ -73,7 +79,13 @@ def test_rank_checkpoints_balances_accuracy_and_latency(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(rc, "benchmark_latency_ms", fake_latency)
 
-    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), metric_balance=(0.4, 0.6), benchmark_iters=1)
+    ranked = rc.rank_checkpoints(
+        outputs_root=outputs,
+        device=torch.device("cpu"),
+        metric_balance=(0.4, 0.6),
+        benchmark_iters=1,
+        selection_profile="fast",
+    )
     assert ranked[0].checkpoint == fast.resolve()
     assert ranked[1].checkpoint != fast.resolve()
     assert {ranked[1].checkpoint, ranked[2].checkpoint} == {slow.resolve(), (outputs / "quick_mhatt" / "best_kws12.pt").resolve()}
@@ -103,6 +115,7 @@ def test_select_best_checkpoint_writes_report(tmp_path: Path, monkeypatch) -> No
         report_path=report,
         use_cache=False,
         rebuild=True,
+        selection_profile="fast",
     )
     assert chosen == fast.resolve()
     assert runtime_device == "cpu"
@@ -127,6 +140,7 @@ def test_select_best_checkpoint_falls_back_to_quick_mhatt_when_guardrail_fails(t
         report_path=tmp_path / "report.json",
         use_cache=False,
         rebuild=True,
+        selection_profile="fast",
     )
 
     assert chosen == baseline.resolve()
@@ -174,7 +188,7 @@ def test_rank_checkpoints_uses_overall_metrics_after_focus_tie(tmp_path: Path, m
 
     monkeypatch.setattr(rc, "benchmark_latency_ms", fake_latency)
 
-    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), benchmark_iters=1)
+    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), benchmark_iters=1, selection_profile="fast")
     assert ranked[0].checkpoint == topline.resolve()
     assert ranked[1].checkpoint == balanced.resolve()
     assert ranked[-1].checkpoint == (outputs / "quick_mhatt" / "best_kws12.pt").resolve()
@@ -221,7 +235,34 @@ def test_rank_checkpoints_prioritizes_focus_keyword_metrics(tmp_path: Path, monk
 
     monkeypatch.setattr(rc, "benchmark_latency_ms", fake_latency)
 
-    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), benchmark_iters=1)
+    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), benchmark_iters=1, selection_profile="fast")
     assert ranked[0].checkpoint == focus_winner.resolve()
     assert ranked[1].checkpoint == topline.resolve()
     assert ranked[-1].checkpoint == (outputs / "quick_mhatt" / "best_kws12.pt").resolve()
+
+
+def test_stable_profile_prioritizes_min_precision_and_recall(tmp_path: Path, monkeypatch) -> None:
+    outputs = tmp_path / "outputs"
+    stable = _write_run(
+        outputs / "stable_pick",
+        run_name="stable_pick",
+        acc=0.92,
+        recall=0.88,
+        unknown_rate=0.02,
+        min_precision=0.95,
+        min_recall=0.95,
+    )
+    _write_run(
+        outputs / "recall_heavy",
+        run_name="recall_heavy",
+        acc=0.94,
+        recall=0.93,
+        unknown_rate=0.06,
+        min_precision=0.81,
+        min_recall=0.82,
+    )
+
+    monkeypatch.setattr(rc, "benchmark_latency_ms", lambda ckpt, device, iters=30: 9.0)  # noqa: ARG005
+
+    ranked = rc.rank_checkpoints(outputs_root=outputs, device=torch.device("cpu"), benchmark_iters=1, selection_profile="stable")
+    assert ranked[0].checkpoint == stable.resolve()

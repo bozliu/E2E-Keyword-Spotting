@@ -1,0 +1,239 @@
+{
+  "status": "smoke_only",
+  "valid_source": "realtime_accuracy_first_valid_smoke.json",
+  "test_source": "realtime_accuracy_first_test_smoke.json",
+  "valid": {
+    "split": "valid",
+    "num_eval_samples": 31,
+    "runtime_label_backend": "external-ensemble",
+    "external_kws_model_id": "ensemble/ast-superb-kws12",
+    "external_kws_device": "mps",
+    "per_class_kws12": {
+      "silence": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "unknown": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 20,
+        "predicted": 20,
+        "top_confusions": []
+      },
+      "yes": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "no": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "up": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "down": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "left": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "right": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "on": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "off": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "stop": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "go": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      }
+    },
+    "min_kws12_precision": 1.0,
+    "min_kws12_recall": 1.0,
+    "unknown_to_target_rate": 0.0,
+    "no_match_rate": 0.6774193548387096,
+    "avg_match_latency_ms": 421.0000000000015,
+    "p95_match_latency_ms": 577.5000000000013,
+    "goal": {
+      "min_kws12_precision": 0.95,
+      "min_kws12_recall": 0.95,
+      "unknown_to_target_rate_max": 0.02
+    },
+    "passed": true
+  },
+  "test": {
+    "split": "test",
+    "num_eval_samples": 31,
+    "runtime_label_backend": "external-ensemble",
+    "external_kws_model_id": "ensemble/ast-superb-kws12",
+    "external_kws_device": "mps",
+    "per_class_kws12": {
+      "silence": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "unknown": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 20,
+        "predicted": 20,
+        "top_confusions": []
+      },
+      "yes": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "no": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "up": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "down": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "left": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "right": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "on": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "off": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "stop": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      },
+      "go": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 1,
+        "predicted": 1,
+        "top_confusions": []
+      }
+    },
+    "min_kws12_precision": 1.0,
+    "min_kws12_recall": 1.0,
+    "unknown_to_target_rate": 0.0,
+    "no_match_rate": 0.6774193548387096,
+    "avg_match_latency_ms": 467.00000000000165,
+    "p95_match_latency_ms": 965.0000000000014,
+    "goal": {
+      "min_kws12_precision": 0.95,
+      "min_kws12_recall": 0.95,
+      "unknown_to_target_rate_max": 0.02
+    },
+    "passed": true
+  }
+}

@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from kws.constants import IGNORE_INDEX, INDEX_TO_COMMAND31, TARGET_KEYWORDS_10
 from kws.data.audio import MelFrontend
 from kws.data.dataset import KWSSampleDataset, build_collate_fn, load_manifests, parse_augment_config
-from kws.data.hi_mia import build_himia_manifests
+from kws.data.hi_mia import build_himia_manifests_with_status
 from kws.data.l2_arctic import build_l2_arctic_eval_manifests
-from kws.data.local_speech_commands import build_local_manifests, detect_optional_test_mirror
+from kws.data.local_speech_commands import build_local_manifests, detect_xiaomi_test_mirror
 from kws.data.manifest import ManifestRecord
 from kws.data.mswc import build_mswc_manifests
 from kws.utils.keyword_focus import DEFAULT_CONFUSION_GROUPS, DEFAULT_CONFUSION_OVERSAMPLE, DEFAULT_KEYWORD_OVERSAMPLE, DEFAULT_WEAK_KEYWORDS
@@ -68,6 +68,17 @@ _CONFUSABLE_NEGATIVES = {
 }
 
 
+def _synthetic_hard_negative_cfg(cfg: Dict[str, object]) -> Dict[str, object]:
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, dict):
+        return {}
+    synthetic_cfg = data_cfg.get("synthetic", {})
+    if not isinstance(synthetic_cfg, dict):
+        return {}
+    hard_negative_cfg = synthetic_cfg.get("hard_negatives", {})
+    return hard_negative_cfg if isinstance(hard_negative_cfg, dict) else {}
+
+
 def _keyword_focus_settings(cfg: Dict[str, object]) -> Dict[str, object]:
     training = cfg.get("training", {})
     focus = training.get("keyword_focus", {}) if isinstance(training, dict) else {}
@@ -79,6 +90,19 @@ def _keyword_focus_settings(cfg: Dict[str, object]) -> Dict[str, object]:
         "oversample_factor": float(focus.get("oversample_factor", DEFAULT_KEYWORD_OVERSAMPLE)),
         "confusion_factor": float(focus.get("confusion_factor", DEFAULT_CONFUSION_OVERSAMPLE)),
     }
+
+
+def _resolve_hi_mia_require_full(cfg: Dict[str, object]) -> bool:
+    data_cfg = cfg.get("data", {})
+    if not isinstance(data_cfg, dict):
+        return False
+    external_cfg = data_cfg.get("external", {})
+    if not isinstance(external_cfg, dict):
+        return False
+    hi_cfg = external_cfg.get("hi_mia", {})
+    if not isinstance(hi_cfg, dict):
+        return False
+    return bool(hi_cfg.get("require_full", False))
 
 
 def _command_weight(records: List[ManifestRecord], *, keyword_focus: Dict[str, object]) -> Dict[int, float]:
@@ -138,8 +162,8 @@ def prepare_data(cfg: Dict[str, object], project_root: str | Path) -> Dict[str, 
         limit_per_class=cfg["data"]["local"].get("limit_per_class"),
     )
 
-    mirror_root = root / cfg["data"]["local"].get("optional_test_mirror", "")
-    mirror_stats = detect_optional_test_mirror(local_manifests["test"], mirror_root)
+    xiaomi_root = root / cfg["data"]["local"].get("xiaomi_mirror", "")
+    mirror_stats = detect_xiaomi_test_mirror(local_manifests["test"], xiaomi_root)
     external_cfg = cfg["data"].get("external", {})
     if not isinstance(external_cfg, dict):
         external_cfg = {}
@@ -149,6 +173,13 @@ def prepare_data(cfg: Dict[str, object], project_root: str | Path) -> Dict[str, 
 
     external_enabled = bool(hi_cfg.get("enabled", False))
     external_stats: Dict[str, int] = {"train": 0, "valid": 0, "test": 0}
+    hi_status: Dict[str, object] = {
+        "reduced_data_mode": False,
+        "present_source_splits": [],
+        "source_file_counts": {},
+        "build_mode": "disabled",
+        "manifest_counts": external_stats,
+    }
     if external_enabled:
         hi_root = (root / str(hi_cfg.get("root", ""))).resolve()
         if not hi_root.exists():
@@ -156,12 +187,17 @@ def prepare_data(cfg: Dict[str, object], project_root: str | Path) -> Dict[str, 
                 f"HI-MIA is enabled but not found at {hi_root}. "
                 "Run: python -m kws.data.download_external --dataset hi_mia"
             )
-        himia_manifests = build_himia_manifests(
+        himia_manifests, hi_status = build_himia_manifests_with_status(
             root=hi_root,
             output_dir=manifests_root,
             limit_per_split=hi_cfg.get("limit_per_split"),
         )
         external_stats = {k: len(v) for k, v in himia_manifests.items()}
+        if _resolve_hi_mia_require_full(cfg) and bool(hi_status.get("reduced_data_mode", False)):
+            raise RuntimeError(
+                "HI-MIA is configured with require_full=true, but the current restore is still reduced_data_mode=true. "
+                "Finish the full HI-MIA restore before final training or evaluation."
+            )
 
     focus_cfg = _keyword_focus_settings(cfg)
     confusable_words = []
@@ -203,12 +239,31 @@ def prepare_data(cfg: Dict[str, object], project_root: str | Path) -> Dict[str, 
         )
         l2_stats = {"test": len(l2_manifests.get("test", []))}
 
+    synthetic_cfg = _synthetic_hard_negative_cfg(cfg)
+    synthetic_enabled = bool(synthetic_cfg.get("enabled", False))
+    synthetic_stats: Dict[str, int] = {"train": 0, "valid": 0, "test": 0}
+    if synthetic_enabled:
+        required_splits = ("train", "valid")
+        for split in ("train", "valid", "test"):
+            manifest_path = manifests_root / f"synthetic_hard_negative_{split}.jsonl"
+            if not manifest_path.exists():
+                if split in required_splits:
+                    raise FileNotFoundError(
+                        f"Synthetic hard-negative manifest missing: {manifest_path}. "
+                        "Generate it first with `python -m kws.data.hard_negatives ...` "
+                        "or run `python -m kws.train_verifier ...` with hard negatives enabled."
+                    )
+                continue
+            synthetic_stats[split] = len(load_manifests([manifest_path]))
+
     stats = {
         "local": {k: len(v) for k, v in local_manifests.items()},
         "external_hi_mia": external_stats,
+        "external_hi_mia_status": hi_status,
         "external_mswc": mswc_stats,
         "external_l2_arctic_eval": l2_stats,
-        "optional_test_mirror": mirror_stats,
+        "synthetic_hard_negative": synthetic_stats,
+        "xiaomi_mirror": mirror_stats,
     }
     with (manifests_root / "dataset_stats.json").open("w", encoding="utf-8") as handle:
         json.dump(stats, handle, indent=2, ensure_ascii=False)
@@ -231,6 +286,8 @@ def create_dataloaders(cfg: Dict[str, object], project_root: str | Path) -> Data
         mswc_cfg = {}
     use_hi_mia = bool(hi_cfg.get("enabled", False))
     use_mswc = bool(mswc_cfg.get("enabled", False))
+    synthetic_cfg = _synthetic_hard_negative_cfg(cfg)
+    use_synthetic_hard_negatives = bool(synthetic_cfg.get("enabled", False))
     keyword_focus = _keyword_focus_settings(cfg)
 
     def _records(split: str) -> List[ManifestRecord]:
@@ -239,6 +296,8 @@ def create_dataloaders(cfg: Dict[str, object], project_root: str | Path) -> Data
             paths.append(manifests_root / f"hi_mia_{split}.jsonl")
         if use_mswc:
             paths.append(manifests_root / f"mswc_{split}.jsonl")
+        if use_synthetic_hard_negatives and split in ("train", "valid"):
+            paths.append(manifests_root / f"synthetic_hard_negative_{split}.jsonl")
         return load_manifests(paths)
 
     train_records = _records("train")
@@ -306,6 +365,7 @@ def create_dataloaders(cfg: Dict[str, object], project_root: str | Path) -> Data
         "test_samples": len(test_records),
         "with_hi_mia": use_hi_mia,
         "with_mswc": use_mswc,
+        "with_synthetic_hard_negatives": use_synthetic_hard_negatives,
     }
 
     return DataLoaders(train=train_loader, valid=valid_loader, test=test_loader, stats=stats)

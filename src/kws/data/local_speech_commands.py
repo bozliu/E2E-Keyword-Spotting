@@ -91,11 +91,11 @@ def build_local_manifests(
     return manifests
 
 
-def detect_optional_test_mirror(local_test_manifest: Sequence[ManifestRecord], mirror_root: str | Path) -> Dict[str, int]:
-    """Check duplication against an optional secondary mirror folder if present."""
-    mirror_path = Path(mirror_root).expanduser().resolve()
-    if not mirror_path.exists():
-        return {"mirror_files": 0, "overlap": 0}
+def detect_xiaomi_test_mirror(local_test_manifest: Sequence[ManifestRecord], xiaomi_root: str | Path) -> Dict[str, int]:
+    """Check duplication against XiaoMi mirror folder if present."""
+    xiaomi_path = Path(xiaomi_root).expanduser().resolve()
+    if not xiaomi_path.exists():
+        return {"xiaomi_files": 0, "overlap": 0}
 
     local_keys = {
         (Path(rec.path).parent.name, Path(rec.path).name)
@@ -103,15 +103,15 @@ def detect_optional_test_mirror(local_test_manifest: Sequence[ManifestRecord], m
         if rec.source == "local_speech_commands"
     }
 
-    mirror_files = 0
+    xiaomi_files = 0
     overlap = 0
-    for class_dir in mirror_path.iterdir():
+    for class_dir in xiaomi_path.iterdir():
         if not class_dir.is_dir():
             continue
         for wav_path in class_dir.glob("*.wav"):
-            mirror_files += 1
+            xiaomi_files += 1
             key = (class_dir.name, wav_path.name)
             if key in local_keys:
                 overlap += 1
 
-    return {"mirror_files": mirror_files, "overlap": overlap}
+    return {"xiaomi_files": xiaomi_files, "overlap": overlap}

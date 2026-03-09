@@ -1,257 +1,232 @@
-# End-to-End Keyword Spotting (`v2` Public Release)
+# E2E Keyword Spotting v3
 
-A cleaned public release of a lightweight end-to-end keyword spotting (KWS) system for realtime command recognition and wake-oriented far-field screening.
+`v3` is the public-release candidate of this repository: a release-focused rebuild of the older end-to-end keyword spotting project, now organized around reproducible benchmarks, a CPU-safe baseline demo, and an `accuracy-first` desktop demo that uses an imported Hugging Face ensemble on Apple MPS.
 
-## Overview
-This repository packages the current public `v2` version of the project into a reproducible research-and-engineering artifact. It keeps the original thesis-era implementation available in `legacy-v1`, while `main` is intended to track the latest stable public release.
+The short version:
 
-The public `v2` pipeline combines:
-- a lightweight `mhatt_crnn` or `keyword_mamba` backbone,
-- dual-task learning for `command31` classification and wake/no-wake detection,
-- teacher distillation from `WavLM Base+` during training only,
-- confusion-aware keyword-focus training for hard pairs such as `left / on / down`, and
-- a realtime Matplotlib demo with automatic checkpoint/device ranking.
+- `v2` is still the practical CPU desktop baseline.
+- `v3` is the strongest local-protocol accuracy path we have today.
+- On the current local `KWS12` protocol, `v3` passes the offline `valid/test` target of `min per-class precision >= 95%` and `min per-class recall >= 95%`.
+- Full-stream realtime validation must still be rerun before we headline realtime `>95%` as a public claim. At the moment, the realtime path is smoke-validated and the offline benchmark is the formal result.
 
-## Why Keyword Spotting Matters
-Keyword spotting is a core building block for on-device voice interfaces, smart speakers, wearables, and embedded assistants. A practical KWS system has to be accurate enough for daily use, lightweight enough to stay resident, low-latency enough to feel instantaneous, and robust enough to tolerate noise, distance, and speaker variation. This repository focuses on that deployment-facing regime rather than accuracy alone.
+## What is public in this repo
 
-## What Changed from the Legacy Repository
-Compared with the legacy public branch, this release adds:
-- a modern Python 3.12 / PyTorch 2.5 codebase under `src/`,
-- unified training, evaluation, ranking, and demo CLIs,
-- lightweight distilled checkpoints selected by realtime deployment criteria,
-- targeted confusion reduction for hard command pairs,
-- public dataset setup instructions instead of redistributing datasets,
-- benchmark figures and reusable tables, and
-- CI smoke checks for the public release branch.
+- `v2 detector-only CPU demo`
+  - stable, lightweight, public-safe baseline
+- `v3 accuracy-first desktop demo`
+  - detector gate + external `AST + SUPERB` ensemble
+  - requires Apple `MPS`
+- `HF Space / web demo`
+  - browser microphone flow for non-technical users
+  - currently kept separate from the `accuracy-first` desktop path
 
-The old version remains available in the `legacy-v1` branch and the `v1.0-legacy` tag.
+## Release Status
 
-## Main Contributions
-1. A public, reproducible end-to-end KWS pipeline for `Speech Commands`-style command recognition with wake-centric evaluation.
-2. A lightweight distilled demo model that preserves CPU-friendly latency while improving hard-keyword robustness.
-3. A keyword-focus training/calibration workflow that explicitly targets confusable command pairs instead of optimizing only a single aggregate score.
-4. A practical realtime demo interface and ranking flow that can be reused by others for low-latency KWS benchmarking.
+| Claim | Current status | Evidence |
+| --- | --- | --- |
+| `v3` offline local-protocol benchmark passes `95%+` per class | Passed | [`docs/assets/data/release_summary_v3.json`](docs/assets/data/release_summary_v3.json) |
+| `v3` desktop realtime path exists and shares the same runtime engine as the validator | Implemented | [`src/kws/demo/realtime.py`](src/kws/demo/realtime.py), [`src/kws/demo/validate_realtime.py`](src/kws/demo/validate_realtime.py) |
+| Full realtime `valid/test` claim is ready for public headline use | Not yet locked | Long validator commands are listed below |
 
-## Project Task and Deployment Goal
-The public `v2` task is a `12`-label deployment-oriented KWS setup:
-- `silence`
-- `unknown`
-- `10` target command keywords: `yes, no, up, down, left, right, on, off, stop, go`
+This table is intentionally conservative. It separates what is already proven from what still needs one last long validation run.
 
-The deployment goal is not open-vocabulary ASR. It is a lightweight always-on command recognizer with low CPU latency, reduced false triggers, and better handling of hard confusions in interactive demo settings.
+## v1 -> v2 -> v3
 
-## What Is Unique in This Release
-Relative to the legacy repo and to standard small-footprint KWS baselines, the public `v2` release emphasizes a specific engineering combination:
-- **dual-task supervision**: command recognition plus wake screening from a shared backbone,
-- **training-only heavy teacher**: `WavLM Base+` is used only during training, not at runtime,
-- **confusion-aware optimization**: difficult words can receive higher weights and explicit separation pressure,
-- **targeted runtime calibration**: hard keywords use stronger per-keyword guardrails without slowing the whole vocabulary, and
-- **deployment-first model selection**: ranking uses latency and false-trigger guardrails rather than accuracy only.
+| Version | Core stack | Primary demo mode | Training / release setup | Eval protocol | Min per-class precision | Min per-class recall | Unknown->target rate | Latency | Status |
+| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| `v1 (2021 legacy)` | archived end-to-end KWS prototype | historical local script | legacy codebase, not reproduced in this repo | not rebenchmarked | `-` | `-` | `-` | `-` | Historical reference only |
+| `v2 (recent main)` | `MHAtt-CRNN` detector-only | CPU desktop demo | Speech Commands + HI-MIA negatives, stable selection profile | current local protocol, selection validation | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` CPU | Public-safe CPU baseline |
+| `v3 (current RC)` | detector gate + `AST/SUPERB` external ensemble | accuracy-first desktop demo on `MPS` | imported HF verifier/teacher + realtime validator + public-release assets | full `valid/test` local command-label protocol | `95.44%` | `95.38%` | `0.43%` | `55.64 ms` MPS | Offline acceptance passed |
 
-This means the repository is not claiming a universal new SOTA result. Instead, it offers a strong, transparent, and reusable public baseline for realtime lightweight KWS.
+What this means:
 
-## Repository Layout
-```text
-.
-├── README.md
-├── LICENSE
-├── CHANGELOG.md
-├── pyproject.toml
-├── environment.yml
-├── configs/
-├── scripts/
-├── src/
-├── tests/
-├── assets/
-│   ├── benchmarks/
-│   ├── demo/
-│   └── figures/
-├── checkpoints/
-└── data/
+- `v2` is still the better choice when you need a fast CPU-only demo.
+- `v3` is the first path in this repo that clears the worst-class `95%` target on the current local protocol.
+- `v3` achieves that by trading latency for accuracy and by relying on `MPS`, so it should be presented as an `accuracy-first` mode, not a universal default for all machines.
+
+## System Overview
+
+```mermaid
+flowchart LR
+    Mic["Microphone / streamed clip"] --> Gate["v2 detector gate<br/>wake + smoothing + UI cadence"]
+    Gate --> Buffer["Rolling audio window"]
+    Buffer --> Ensemble["External ensemble<br/>AST + SUPERB on MPS"]
+    Ensemble --> Decision["KWS12 decision"]
+    Decision --> GUI["Desktop wheel / prompt state"]
+    Decision --> Validator["Realtime validator"]
+    Validator --> Reports["Per-class metrics + latency reports"]
 ```
 
-## Installation
-### Conda
-```bash
-bash scripts/bootstrap_env.sh
-conda activate dl
-```
+This diagram shows why `v3` is not just “one bigger model.” The detector is still useful for gate behavior and realtime UX, while the imported ensemble is the high-accuracy label source.
 
-To use a different environment name:
-```bash
-KWS_ENV_NAME=my-kws-env bash scripts/bootstrap_env.sh
-conda activate my-kws-env
-```
+## Visual Results
 
-### Editable install
-```bash
-python -m pip install -e .
-```
+![Per-class valid/test metrics](docs/assets/per_class_valid_test.png)
 
-## Datasets
-This repository does **not** redistribute dataset audio.
+This figure shows `precision` and `recall` for every `KWS12` class on both `valid` and `test`. The dashed `95%` line is the acceptance target. This is a good result: every bar for the offline `v3` benchmark stays above the target line, including the historically weaker words like `up`, `go`, and `right`.
 
-### Public dataset sources
-- Google Speech Commands (official paper): [1]
-- HI-MIA far-field speaker verification data: [2]
+![Latency vs worst-class quality](docs/assets/latency_vs_accuracy.png)
 
-The public setup instructions live in [data/README.md](data/README.md).
+This figure shows the tradeoff that matters for release positioning. `v2` is much faster on CPU, but it does not clear the worst-class `95%` target. `v3` moves to the right because it uses an external ensemble on `MPS`, but it is the first configuration that reaches the quality target on this local protocol.
 
-### Prepare Speech Commands split
-```bash
-python scripts/prepare_speech_commands.py \
-  --dataset-root /path/to/speech_commands_v0.02 \
-  --output-root data/local/speech_commands_split \
-  --mode symlink
-```
+## Benchmark vs Ourselves
 
-### Download HI-MIA manifests and audio
-```bash
-bash scripts/download_hi_mia.sh
-```
+| Method | Split / protocol | Metric scope | Min precision | Min recall | Unknown->target rate | Latency | Device |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| `v2 stable detector-only` | selection validation | min per-class precision / recall | `90.47%` | `89.91%` | `2.67%` | `8.57 ms` | `cpu` |
+| `SUPERB imported model` | test | min per-class precision / recall | `75.47%` | `94.27%` | `4.83%` | `39.69 ms` | `mps` |
+| `MIT AST imported model` | test | min per-class precision / recall | `0.00%` | `0.00%` | `0.33%` | `29.96 ms` | `mps` |
+| `v3 AST+SUPERB ensemble` | test | min per-class precision / recall | `96.75%` | `95.75%` | `0.21%` | `46.95 ms` | `mps` |
+| `v3 acceptance summary` | valid + test | goal pass snapshot | `95.44%` | `95.38%` | `0.43%` | `55.64 ms` | `mps` |
 
-## Training
-### Latest public demo recipe
-```bash
-python -m kws.train --config configs/demo_mhatt_small_focus_lod.yaml
-```
+This is the most important comparison in the README. It shows that imported large models are not automatically good on our protocol: `SUPERB` alone is recall-heavy but too noisy, and `MIT AST` alone is unusable here. The useful improvement is the final `AST+SUPERB` ensemble plus the runtime packaging around it.
 
-### Quick internal baseline
-```bash
-python -m kws.train --config configs/quick_mhatt.yaml
-```
+## Reference vs SOTA
 
-### Batch demo training helpers
-```bash
-bash scripts/run_demo_training.sh
-bash scripts/run_quick.sh
-bash scripts/run_smoke.sh
-```
+| Method | Dataset / protocol | Headline metric | Value | Source type | Comparability |
+| --- | --- | --- | --- | --- | --- |
+| `Ours v3 accuracy-first` | current local command-label protocol (`valid + test`) | min per-class precision / recall | `95.44% / 95.38%` | Reproduced in this repo | Directly comparable only inside this repo |
+| `Ours v2 stable detector-only` | current local protocol, selection validation | min per-class precision / recall | `90.47% / 89.91%` | Reproduced in this repo | Directly comparable only inside this repo |
+| `MatchboxNet-3x2x64` | Speech Commands V2 12-class closed-set classification | Accuracy | `98.19%` | Reported in prior paper benchmarks | Not directly comparable |
+| `BC-ResNet` | Speech Commands V2 12-class closed-set classification | Accuracy | `98.0%` | Reported in prior paper benchmarks | Not directly comparable |
+| `EdgeSpot (ICASSP 2026)` | few-shot KWS at fixed FAR | `10-shot accuracy @ 1% FAR` | `82.0%` | Reported in paper abstract | Not directly comparable |
 
-## Evaluation
-```bash
-python -m kws.eval \
-  --checkpoint checkpoints/demo_mhatt_small_focus_lod_best_kws12.pt \
-  --split test
-```
+This table is useful only if the comparability column is taken seriously. Our current public claim is about our own local protocol and runtime packaging. The paper baselines above are important context, but they are not a fair apples-to-apples ranking against the `v3` result shown here.
 
 ## Realtime Demo
-### Explicit checkpoint path
+
+### `v3` accuracy-first desktop demo
+
 ```bash
-python -m kws.demo.realtime \
-  --checkpoint checkpoints/demo_mhatt_small_focus_lod_best_kws12.pt \
-  --device auto \
+conda run -n dl python -m kws.demo.realtime \
+  --demo-profile accuracy-first \
+  --checkpoint auto \
+  --device mps \
+  --external-kws-device mps \
   --wheel kws12 \
   --audio-device 1
 ```
 
-### Enable `--checkpoint auto`
-```bash
-bash scripts/install_public_checkpoints.sh
-python scripts/select_demo_checkpoint.py
-python -m kws.demo.realtime --checkpoint auto --device auto --wheel kws12 --audio-device 1
-```
-
-## Public Checkpoints
-Release weights are documented in [checkpoints/README.md](checkpoints/README.md). They are distributed through GitHub Releases rather than Git history.
-
-## Results
-### Demo Figure
-![Realtime demo UI](assets/demo/google_speech_demo.png)
-
-This figure shows the public realtime interface used for the demo benchmark. The center label presents the current predicted command, while the highlighted wheel segment gives fast feedback for streaming inference. This is useful to other practitioners because it demonstrates how a low-latency KWS system can be exposed interactively instead of only through offline accuracy numbers. The figure can be regenerated with:
+### `v2` CPU baseline desktop demo
 
 ```bash
-PYTHONPATH=src python scripts/build_public_assets.py
+conda run -n dl python -m kws.demo.realtime \
+  --demo-profile cpu-baseline \
+  --checkpoint auto \
+  --device cpu \
+  --wheel kws12 \
+  --audio-device 1
 ```
 
-### Demo-Centric Benchmark Table
-| Model / Run | Runtime Device | Params | Latency (ms) | `kws12_target_recall` | `unknown_to_target_rate` | `focus_keyword_recall_mean` | `focus_pair_confusion_rate` | Notes |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `quick_mhatt` | CPU | 1.73 M | 15.48 | 0.7312 | 0.0630 | 0.7878* | n/a | Internal lightweight baseline before distillation and keyword-focus refinement |
-| `demo_mhatt_small_focus` | CPU | 0.81 M | 6.50 | 0.8851 | 0.0267 | 0.8582 | 0.0862 | Distilled lightweight model with keyword-focus weighting and runtime calibration |
-| `demo_mhatt_small_focus_lod` | CPU | 0.81 M | 6.92 | 0.8734 | 0.0548 | 0.9303 | 0.0300 | Latest public demo checkpoint optimized for `left / on / down` confusions |
+### Full realtime validation gate
 
-`*` Recomputed from per-keyword recall for `left`, `on`, and `down` because the earliest baseline report did not yet expose the newer focus-pair metric directly.
+Run these before turning realtime into a public headline claim:
 
-This table is the main deployment summary for the public release. It shows that the latest public demo was not chosen by raw aggregate accuracy alone; it was chosen because it keeps single-digit CPU latency while sharply reducing the hard confusions that dominated the interactive demo. Others can reuse this table as a transparent comparison point when evaluating their own lightweight KWS checkpoints under a similar deployment-first lens. The raw public benchmark data used to build this table lives in [`assets/benchmarks/demo_benchmark.csv`](assets/benchmarks/demo_benchmark.csv).
+```bash
+conda run -n dl python -m kws.demo.validate_realtime \
+  --demo-profile accuracy-first \
+  --checkpoint auto \
+  --device mps \
+  --external-kws-device mps \
+  --wheel kws12 \
+  --split valid \
+  --output reports/realtime_accuracy_first_valid.json
+```
 
-### Focused Confusion Reduction on Hard Keywords
-![Focused confusion reduction](assets/figures/focus_confusion_reduction.png)
+```bash
+conda run -n dl python -m kws.demo.validate_realtime \
+  --demo-profile accuracy-first \
+  --checkpoint auto \
+  --device mps \
+  --external-kws-device mps \
+  --wheel kws12 \
+  --split test \
+  --output reports/realtime_accuracy_first_test.json
+```
 
-This figure compares the confusion rate on the three explicitly targeted hard keywords: `left`, `on`, and `down`. It is helpful because it highlights a failure mode that aggregate accuracy can hide: a model may score well overall while still confusing phonetically difficult commands in realtime use. Researchers can reuse this figure to evaluate targeted refinements, curriculum changes, or calibration strategies on their own checkpoints. The chart is generated from [`assets/benchmarks/focus_confusions.csv`](assets/benchmarks/focus_confusions.csv).
+Current public interpretation:
 
-### Latency vs. Recall Trade-off
-![Latency versus recall](assets/figures/latency_vs_recall.png)
+- The realtime path is implemented and smoke-validated.
+- The offline benchmark is the formal `95%+` result today.
+- Once both long realtime reports pass, this README can be updated to promote realtime from “smoke validated” to “fully validated on the local protocol.”
 
-This figure visualizes the deployment trade-off between CPU latency and target-keyword recall across the public benchmark candidates. It is useful because embedded and always-on systems rarely optimize a single metric in isolation; this view makes the cost/benefit of each checkpoint legible. Others can reuse it as a template for model selection when latency, recall, and false-trigger behavior all matter. The source data is stored in [`assets/benchmarks/demo_benchmark.csv`](assets/benchmarks/demo_benchmark.csv).
+## Public Demo And Release Assets
 
-### Legacy Public Repo vs. Public `v2`
-| Release | Public scope | Realtime demo | Reproducible dataset setup | Public benchmark assets | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `legacy-v1` | Thesis-era public baseline | No shipped public demo workflow | No official split helper; pre-split data link in old README | Training curves only | Preserved for historical continuity |
-| `v2.0-public` | Latest stable public release | Yes | Yes, with public download instructions and `prepare_speech_commands.py` | Yes, with CSV-backed figures and tables | Intended public reference version on `main` |
+- GitHub repo: [bozliu/E2E-Keyword-Spotting](https://github.com/bozliu/E2E-Keyword-Spotting)
+- Hugging Face Space demo: [bozliu/e2e-keyword-spotting-demo](https://huggingface.co/spaces/bozliu/e2e-keyword-spotting-demo)
+- Public release process: [`docs/public_release_v3.md`](docs/public_release_v3.md)
+- Browser demo checklist: [`docs/public_demo_release_checklist.md`](docs/public_demo_release_checklist.md)
 
-This release-comparison table is intentionally qualitative rather than over-claimed. The old public repo did not ship a directly reproducible checkpoint-and-demo benchmark under the current protocol, so the fairest comparison is about public usability and reproducibility. That distinction matters for others because a research repository is only reusable if outsiders can install it, prepare data, and run the reported pipeline without hidden local state.
+Recommended hosting split:
 
-### Selected Literature Context
-| Method | Dataset / Protocol | Headline Metric | Value | Source Type | Comparability |
-| --- | --- | --- | ---: | --- | --- |
-| Public `v2` release (ours) | Speech Commands V1 12-label task + HI-MIA negatives | `kws12_target_recall / latency` | `87.34% / 6.92 ms` | Reproduced in this repo | Not directly comparable |
-| MatchboxNet-3x2x64 [4] | Speech Commands V2 12-class | Accuracy | `98.19%` | Reported from paper | Close but not exact |
-| BC-ResNet [5] | Speech Commands V2 12-class | Accuracy | `98.0%` | Reported from paper | Close but not exact |
+- GitHub: source code, figures, cleaned metrics, release notes, demo GIF/MP4
+- GitHub Releases: our own checkpoints and calibration files
+- Hugging Face model repo: model card + our release artifacts
+- Hugging Face Space: optional browser CPU demo
 
-This table is included for context, not for inflated claims. The public `v2` release uses a different data mix and deployment-oriented selection criteria, so we intentionally describe it as **competitive and practically useful**, not as a directly proven new SOTA. That framing helps other readers compare methods responsibly instead of treating incomparable numbers as if they were measured under one protocol.
+Do not upload raw Speech Commands or HI-MIA audio.
 
-## What These Results Mean in Practice
-The public benchmark artifacts are designed to be reusable, not decorative.
+## Reproducing The Benchmark
 
-- The **demo benchmark table** helps others choose a checkpoint for latency-constrained CPU deployment.
-- The **focused confusion figure** helps diagnose whether a model is failing on a few phonetically difficult commands.
-- The **latency vs. recall figure** helps compare deployment trade-offs across checkpoints without rerunning the full demo by hand.
-- The **CSV files in `assets/benchmarks/`** make it straightforward to plug the same visualizations into papers, lab notebooks, or CI dashboards.
+### Environment
 
-## Reproducibility Notes
-- Python: `3.12`
-- Runtime stack: `torch>=2.5`, `torchaudio>=2.5`
-- Public environment file: [`environment.yml`](environment.yml)
-- Package metadata: [`pyproject.toml`](pyproject.toml)
-- Public release workflow: [`docs/public-release.md`](docs/public-release.md)
+```bash
+conda activate dl
+bash scripts/bootstrap_env.sh
+```
 
-The recommended public demo config is [`configs/demo_mhatt_small_focus_lod.yaml`](configs/demo_mhatt_small_focus_lod.yaml). It uses:
-- `mhatt_crnn`
-- `80` mel bins at `16 kHz`
-- `1.0 s` audio windows
-- training-time `WavLM Base+` teacher distillation
-- keyword-focus weighting and confusion-aware loss for hard pairs
+### Offline external-model benchmark
+
+```bash
+conda run -n dl python -m kws.benchmark_external \
+  --model-id ensemble/ast-superb-kws12 \
+  --device mps \
+  --split valid \
+  --output reports/benchmark_ensemble_ast_superb_kws12_valid.json
+```
+
+```bash
+conda run -n dl python -m kws.benchmark_external \
+  --model-id ensemble/ast-superb-kws12 \
+  --device mps \
+  --split test \
+  --output reports/benchmark_ensemble_ast_superb_kws12_test.json
+```
+
+### Generate public figures and cleaned summaries
+
+```bash
+conda run -n dl python scripts/generate_release_assets.py
+```
+
+### Run the local release gate
+
+```bash
+bash scripts/prepare_release_v3.sh
+```
+
+```bash
+KWS_RELEASE_RUN_LONG_VALIDATION=1 bash scripts/prepare_release_v3.sh
+```
+
+## Repository Layout
+
+```text
+.
+├── README.md
+├── app.py
+├── configs/
+├── docs/
+├── scripts/
+├── src/kws/
+└── tests/
+```
+
+The tracked repository is intentionally code-and-release-assets only. Local data, checkpoints, caches, and raw experiment outputs should stay out of git.
 
 ## Limitations
-- The realtime demo remains sensitive to microphone quality, room acoustics, and speaking style.
-- Literature comparisons in this README are context-only unless the dataset, preprocessing, label space, and evaluation protocol match exactly.
-- Public checkpoint selection is deployment-oriented, so the chosen demo model is not necessarily the one with the best single offline metric.
-- HI-MIA is used as an auxiliary public far-field source, which makes the final operating point different from a pure Speech Commands benchmark.
 
-## Public Release Process
-The recommended branch/PR/release workflow is documented in [`docs/public-release.md`](docs/public-release.md). In short:
-- keep `main` for the latest cleaned public release,
-- preserve the old repository in `legacy-v1`,
-- prepare changes in `codex/update-final-public-release`,
-- require a PR and CI before merging, and
-- distribute checkpoints through GitHub Releases.
-
-## Changelog
-See [`CHANGELOG.md`](CHANGELOG.md).
-
-## References
-[1] P. Warden, “Speech Commands: A Dataset for Limited-Vocabulary Speech Recognition,” arXiv:1804.03209, 2018.
-
-[2] X. Qin, N. Li, H. Li, S. Bu, X. Wu, X. Li, H. Liu, and H. Meng, “HI-MIA: A Far-Field Text-Dependent Speaker Verification Database and the Baselines,” arXiv:1912.01231, 2019.
-
-[3] T. N. Sainath and C. Parada, “Convolutional Neural Networks for Small-footprint Keyword Spotting,” in *Proc. Interspeech*, 2015, pp. 1478-1482.
-
-[4] S. Majumdar and B. Ginsburg, “MatchboxNet: 1D Time-Channel Separable Convolutional Neural Network Architecture for Speech Commands Recognition,” arXiv:2004.08531, 2020.
-
-[5] S. Y. Lee, Y. Han, and S. Choi, “Broadcasted Residual Learning for Efficient Keyword Spotting,” arXiv:2106.04140, 2021.
-
-[6] S. Chen, C. Wang, Z. Chen, Y. Wu, S. Liu, J. Li, N. Qian, M. Zeng, X. Yu, F. Wei, and Y. Wu, “WavLM: Large-Scale Self-Supervised Pre-Training for Full Stack Speech Processing,” arXiv:2110.13900, 2021.
+- `v3` is the best current local-protocol accuracy path, not the best all-around deployment path.
+- `v3` depends on Apple `MPS` for its best result; the CPU baseline is still `v2`.
+- HI-MIA full restore is still useful for future work, but it is not the blocker for the current local-protocol release claim.
+- Paper SOTA rows use different datasets, protocols, and operating points, so they are context, not a fair leaderboard.

@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+gradio>=5.20,<6
+huggingface_hub>=0.30,<1
+matplotlib>=3.9,<4
+numpy>=1.26,<3
+PyYAML>=6.0,<7
+socksio>=1.0,<2
+torch==2.6.0+cpu ; platform_system == "Linux"
+torchaudio==2.6.0+cpu ; platform_system == "Linux"
+torch>=2.5,<2.7 ; platform_system != "Linux"
+torchaudio>=2.5,<2.7 ; platform_system != "Linux"

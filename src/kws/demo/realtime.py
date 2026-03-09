@@ -20,8 +20,12 @@ import torchaudio.transforms as ta_transforms
 from kws.constants import CLIP_SECONDS, CLIP_SAMPLES, COMMAND31_LABELS, KWS12_LABELS, TARGET_KEYWORDS_10, command31_to_kws12
 from kws.data.audio import MelFrontend, pad_or_trim
 from kws.demo.rank_checkpoints import benchmark_latency_ms, select_best_checkpoint
-from kws.demo.user_profile import DEFAULT_USER_PROFILE_PATH, PassiveKeywordProfile, blend_keyword_score
+from kws.demo.user_profile import DEFAULT_USER_PROFILE_PATH, PassiveKeywordProfile
+from kws.demo.verifier_runtime import LoadedVerifier, load_runtime_verifier, verify_keyword
 from kws.demo.visuals import TEXT, apply_theme, build_wheel, create_hud, resolve_active_index, update_wheel
+from kws.eval.fusion import select_verifier_candidate
+from kws.external import ENSEMBLE_AST_SUPERB_MODEL_ID, predict_kws12_from_waveforms
+from kws.demo.web_runtime import resolve_runtime_decision as shared_resolve_runtime_decision
 from kws.models import create_model
 from kws.train.engine import pick_device
 from kws.utils.keyword_focus import DEFAULT_FOCUS_RUNTIME_OVERRIDES, DEFAULT_RUNTIME_CONFUSION_GROUPS, load_keyword_calibration
@@ -40,6 +44,11 @@ MIC_RUNNING = "RUNNING"
 MIC_CHECK = "MIC_CHECK"
 MIC_RUNTIME_ERROR = "RUNTIME_ERROR"
 DEFAULT_DEMO_LOCK_PATH = Path.home() / ".kws_demo" / "realtime.lock"
+DEFAULT_DEMO_PROFILE = "accuracy-first"
+DEFAULT_RUNTIME_LABEL_BACKEND = "external-ensemble"
+BASELINE_RUNTIME_LABEL_BACKEND = "detector"
+SUPPORTED_DEMO_PROFILES = ("accuracy-first", "cpu-baseline")
+SUPPORTED_RUNTIME_LABEL_BACKENDS = (DEFAULT_RUNTIME_LABEL_BACKEND, BASELINE_RUNTIME_LABEL_BACKEND)
 
 
 @dataclass(frozen=True)
@@ -70,6 +79,35 @@ class DemoSnapshot:
     stream_sample_rate: float
     input_device_name: str
     error_message: str = ""
+    runtime_label_backend: str = ""
+    backend_note: str = ""
+
+
+@dataclass(frozen=True)
+class ResolvedRealtimeProfile:
+    demo_profile: str
+    detector_device_preference: str
+    runtime_label_backend: str
+    external_kws_model: str
+    external_kws_device: str
+
+
+@dataclass(frozen=True)
+class LoadedRealtimeDemo:
+    checkpoint_path: Path
+    checkpoint_payload: Dict[str, object]
+    runtime_device: torch.device
+    selected_device_label: str
+    model: torch.nn.Module
+    frontend: MelFrontend
+    command31_labels: list[str]
+    wheel: str
+    keyword_calibration: Dict[str, object]
+    sample_rate: int
+    clip_samples: int
+    audio_seconds: float
+    verifier: LoadedVerifier | None
+    resolved_profile: ResolvedRealtimeProfile
 
 
 @dataclass(frozen=True)
@@ -338,6 +376,14 @@ class GateStateMachine:
         self._calibration_scores: List[float] = []
         self._calibrated = mode == "fixed"
 
+    def reset(self, *, now: float | None = None) -> None:
+        self.state = "closed"
+        self._below_close_frames = 0
+        self._hold_until = 0.0
+        self._calibration_start = float(time.monotonic() if now is None else now)
+        self._calibration_scores = []
+        self._calibrated = self.mode == "fixed"
+
     def _finish_calibration(self, now: float) -> None:
         if self.mode != "adaptive" or self._calibrated:
             return
@@ -346,9 +392,11 @@ class GateStateMachine:
         if not self._calibration_scores:
             return
 
-        p95 = float(np.percentile(np.asarray(self._calibration_scores, dtype=np.float64), 95.0))
-        open_thr = max(p95 + self.adaptive.open_offset, self.adaptive.open_floor)
-        close_thr = max(p95 + self.adaptive.close_offset, self.adaptive.close_floor)
+        p95 = float(np.clip(np.percentile(np.asarray(self._calibration_scores, dtype=np.float64), 95.0), 0.0, 1.0))
+        max_open_thr = 0.98
+        open_thr = min(max(p95 + self.adaptive.open_offset, self.adaptive.open_floor), max_open_thr)
+        close_ceiling = max(0.05, open_thr - 0.02)
+        close_thr = min(max(p95 + self.adaptive.close_offset, self.adaptive.close_floor), close_ceiling)
         if close_thr >= open_thr:
             close_thr = max(0.05, open_thr - 0.02)
 
@@ -395,12 +443,22 @@ class GateStateMachine:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Realtime KWS demo (GUI)")
+    parser.add_argument("--demo-profile", type=str, default=DEFAULT_DEMO_PROFILE, choices=list(SUPPORTED_DEMO_PROFILES))
     parser.add_argument("--checkpoint", type=str, default="auto", help="Checkpoint path or 'auto'")
     parser.add_argument("--device", type=str, default="auto", help="auto|mps|cpu|cuda")
+    parser.add_argument("--selection-profile", type=str, default="stable", choices=["stable", "balanced", "fast"])
     parser.add_argument("--wheel", type=str, default="kws12", choices=["command31", "kws12", "target10"])
+    parser.add_argument(
+        "--runtime-label-backend",
+        type=str,
+        default="",
+        help="external-ensemble|detector (defaults from --demo-profile)",
+    )
+    parser.add_argument("--external-kws-model", type=str, default=ENSEMBLE_AST_SUPERB_MODEL_ID)
+    parser.add_argument("--external-kws-device", type=str, default="auto", help="auto|mps|cpu|cuda")
 
     parser.add_argument("--gate-mode", type=str, default="adaptive", choices=["adaptive", "fixed"])
-    parser.add_argument("--sensitivity-profile", type=str, default="high", choices=["high", "balanced", "strict"])
+    parser.add_argument("--sensitivity-profile", type=str, default="strict", choices=["high", "balanced", "strict"])
     parser.add_argument("--threshold", type=float, default=None, help="Legacy alias for fixed wake thresholds")
     parser.add_argument("--wake-open-thr", type=float, default=0.6, help="Wake open threshold (fixed mode)")
     parser.add_argument("--wake-close-thr", type=float, default=0.5, help="Wake close threshold (fixed mode)")
@@ -446,6 +504,237 @@ def parse_args() -> argparse.Namespace:
         help="Startup benchmark iterations for selecting fastest runtime device",
     )
     return parser.parse_args()
+
+
+def resolve_realtime_profile(
+    *,
+    demo_profile: str,
+    detector_device_preference: str,
+    runtime_label_backend: str,
+    external_kws_model: str,
+    external_kws_device: str,
+    wheel: str,
+) -> ResolvedRealtimeProfile:
+    profile = str(demo_profile).strip().lower()
+    if profile not in SUPPORTED_DEMO_PROFILES:
+        raise ValueError(f"Unsupported demo profile: {demo_profile}")
+
+    detector_pref = str(detector_device_preference or "auto").strip().lower() or "auto"
+    if profile == DEFAULT_DEMO_PROFILE and detector_pref == "auto":
+        detector_pref = "mps"
+    elif profile == "cpu-baseline" and detector_pref == "auto":
+        detector_pref = "cpu"
+
+    backend = str(runtime_label_backend or "").strip().lower()
+    if not backend:
+        backend = DEFAULT_RUNTIME_LABEL_BACKEND if profile == DEFAULT_DEMO_PROFILE else BASELINE_RUNTIME_LABEL_BACKEND
+    if backend not in SUPPORTED_RUNTIME_LABEL_BACKENDS:
+        raise ValueError(
+            f"Unsupported runtime label backend: {runtime_label_backend}. "
+            f"Expected one of: {', '.join(SUPPORTED_RUNTIME_LABEL_BACKENDS)}"
+        )
+
+    external_device = str(external_kws_device or "auto").strip().lower() or "auto"
+    if backend == DEFAULT_RUNTIME_LABEL_BACKEND and external_device == "auto":
+        external_device = "mps"
+    if backend == DEFAULT_RUNTIME_LABEL_BACKEND:
+        if str(wheel).strip().lower() == "command31":
+            raise ValueError(
+                "accuracy-first external ensemble only supports --wheel kws12 or --wheel target10. "
+                "Use --demo-profile cpu-baseline for command31 wheel."
+            )
+        if external_device != "mps":
+            raise RuntimeError(
+                "accuracy-first external ensemble requires --external-kws-device mps. "
+                "Use --demo-profile cpu-baseline for detector-only CPU demo."
+            )
+        if not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "accuracy-first external ensemble requires Apple MPS, but MPS is unavailable on this machine. "
+                "Use --demo-profile cpu-baseline to run the detector-only demo."
+            )
+    return ResolvedRealtimeProfile(
+        demo_profile=profile,
+        detector_device_preference=detector_pref,
+        runtime_label_backend=backend,
+        external_kws_model=str(external_kws_model).strip() or ENSEMBLE_AST_SUPERB_MODEL_ID,
+        external_kws_device=external_device,
+    )
+
+
+def _command31_probs_from_kws12_probs(kws12_probs: np.ndarray, command31_labels: Sequence[str]) -> np.ndarray:
+    kws12 = np.asarray(kws12_probs, dtype=np.float32).reshape(-1)
+    out = np.zeros((len(command31_labels),), dtype=np.float32)
+    unknown_mass = float(kws12[1]) if kws12.size > 1 else 0.0
+    non_target_indices: list[int] = []
+    for idx, label in enumerate(command31_labels):
+        name = str(label)
+        if name == "silence":
+            out[idx] = float(kws12[0]) if kws12.size > 0 else 0.0
+        elif name in TARGET_KEYWORDS_10:
+            out[idx] = float(kws12[KWS12_LABELS.index(name)])
+        else:
+            non_target_indices.append(idx)
+    if non_target_indices:
+        share = unknown_mass / float(len(non_target_indices))
+        for idx in non_target_indices:
+            out[idx] = share
+    total = float(out.sum())
+    if total > 0.0 and abs(total - 1.0) > 1e-5:
+        out /= total
+    return out
+
+
+def _resolve_realtime_checkpoint(
+    *,
+    checkpoint: str,
+    detector_device_preference: str,
+    selection_profile: str,
+    ranking_iters: int,
+    no_cache_ranking: bool,
+    rebuild_ranking: bool,
+) -> tuple[Path, str]:
+    ckpt_arg = str(checkpoint).strip()
+    used_auto = ckpt_arg.lower() == "auto"
+    ranked_runtime_device = ""
+    if used_auto:
+        try:
+            ckpt_path, ranked_runtime_device = select_best_checkpoint(
+                outputs_root="outputs",
+                device=detector_device_preference,
+                benchmark_iters=int(ranking_iters),
+                use_cache=not bool(no_cache_ranking),
+                rebuild=bool(rebuild_ranking),
+                selection_profile=selection_profile,
+            )
+        except Exception as exc:
+            msg = _checkpoint_error_message(
+                Path("outputs").resolve(),
+                used_auto=True,
+                details=str(exc),
+                outputs_root="outputs",
+            )
+            raise RuntimeError(msg) from exc
+    else:
+        ckpt_path = Path(ckpt_arg).expanduser().resolve()
+    if not ckpt_path.exists():
+        msg = _checkpoint_error_message(ckpt_path, used_auto=used_auto, outputs_root="outputs")
+        raise FileNotFoundError(msg)
+    return ckpt_path, ranked_runtime_device
+
+
+def load_realtime_demo(
+    *,
+    checkpoint: str,
+    demo_profile: str,
+    detector_device_preference: str,
+    selection_profile: str,
+    wheel: str,
+    runtime_label_backend: str,
+    external_kws_model: str,
+    external_kws_device: str,
+    ranking_iters: int = 8,
+    no_cache_ranking: bool = False,
+    rebuild_ranking: bool = False,
+    device_auto_bench_iters: int = 6,
+) -> LoadedRealtimeDemo:
+    resolved = resolve_realtime_profile(
+        demo_profile=demo_profile,
+        detector_device_preference=detector_device_preference,
+        runtime_label_backend=runtime_label_backend,
+        external_kws_model=external_kws_model,
+        external_kws_device=external_kws_device,
+        wheel=wheel,
+    )
+    ckpt_path, ranked_runtime_device = _resolve_realtime_checkpoint(
+        checkpoint=checkpoint,
+        detector_device_preference=resolved.detector_device_preference,
+        selection_profile=selection_profile,
+        ranking_iters=ranking_iters,
+        no_cache_ranking=no_cache_ranking,
+        rebuild_ranking=rebuild_ranking,
+    )
+    used_auto = str(checkpoint).strip().lower() == "auto"
+    try:
+        checkpoint_payload = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        msg = _checkpoint_error_message(
+            ckpt_path,
+            used_auto=used_auto,
+            details=str(exc),
+            outputs_root="outputs",
+        )
+        raise RuntimeError(msg) from exc
+
+    if used_auto and ranked_runtime_device:
+        runtime_device, selected_device_label, _timings = _resolve_runtime_device(
+            preferred=ranked_runtime_device,
+            checkpoint=checkpoint_payload,
+            benchmark_iters=int(device_auto_bench_iters),
+        )
+        selected_device_label = f"ranked->{runtime_device.type}"
+    else:
+        runtime_device, selected_device_label, _timings = _resolve_runtime_device(
+            preferred=resolved.detector_device_preference,
+            checkpoint=checkpoint_payload,
+            benchmark_iters=int(device_auto_bench_iters),
+        )
+
+    cfg = checkpoint_payload["config"]
+    features = cfg["features"]
+    command31_labels = list(checkpoint_payload.get("label_set", COMMAND31_LABELS))
+    keyword_calibration = load_keyword_calibration(ckpt_path.parent / "keyword_calibration.json")
+    if not keyword_calibration and isinstance(checkpoint_payload.get("keyword_calibration"), dict):
+        keyword_calibration = dict(checkpoint_payload["keyword_calibration"])
+
+    model = create_model(
+        cfg["model"],
+        n_mels=int(features["n_mels"]),
+        num_commands=len(command31_labels),
+    )
+    model.load_state_dict(checkpoint_payload["model_state"])
+    model.to(runtime_device)
+    model.eval()
+
+    frontend = MelFrontend(
+        sample_rate=int(features["sample_rate"]),
+        n_fft=int(features["n_fft"]),
+        hop_length=int(features["hop_length"]),
+        n_mels=int(features["n_mels"]),
+        f_min=float(features.get("f_min", 20.0)),
+        f_max=float(features.get("f_max", 7600.0)),
+    )
+    verifier = None
+    if resolved.runtime_label_backend == BASELINE_RUNTIME_LABEL_BACKEND:
+        verifier = load_runtime_verifier(ckpt_path, device=runtime_device)
+    else:
+        zero = np.zeros((int(round(float(features.get("audio_seconds", CLIP_SECONDS)) * int(features["sample_rate"]))),), dtype=np.float32)
+        predict_kws12_from_waveforms(
+            [zero],
+            model_id=resolved.external_kws_model,
+            device=resolved.external_kws_device,
+            sample_rate=int(features["sample_rate"]),
+        )
+
+    sample_rate = int(features.get("sample_rate", 16_000))
+    audio_seconds = float(features.get("audio_seconds", CLIP_SECONDS))
+    clip_samples = int(round(sample_rate * audio_seconds))
+    return LoadedRealtimeDemo(
+        checkpoint_path=ckpt_path,
+        checkpoint_payload=checkpoint_payload,
+        runtime_device=runtime_device,
+        selected_device_label=selected_device_label,
+        model=model,
+        frontend=frontend,
+        command31_labels=command31_labels,
+        wheel=wheel,
+        keyword_calibration=keyword_calibration,
+        sample_rate=sample_rate,
+        clip_samples=clip_samples,
+        audio_seconds=audio_seconds,
+        verifier=verifier,
+        resolved_profile=resolved,
+    )
 
 
 def get_sensitivity_tuning(profile: str) -> SensitivityTuning:
@@ -751,6 +1040,455 @@ def _open_mic_privacy_settings() -> None:
         pass
 
 
+class RealtimeEngine:
+    def __init__(
+        self,
+        *,
+        model: torch.nn.Module,
+        frontend: MelFrontend,
+        device: torch.device,
+        command31_labels: Sequence[str],
+        wheel: str,
+        gate: GateStateMachine,
+        hop_seconds: float,
+        ema_alpha: float,
+        hold_ms: float,
+        selected_device_label: str,
+        input_device_name: str,
+        stream_sample_rate: float,
+        model_sample_rate: int,
+        audio_seconds: float,
+        mic_precheck_seconds: float,
+        mic_min_rms: float,
+        auto_gain: bool,
+        target_rms: float,
+        max_gain_db: float,
+        display_conf_thr: float,
+        display_wake_thr: float,
+        vote_window: int,
+        vote_min_count: int,
+        passive_profile: PassiveKeywordProfile | None,
+        keyword_calibration: Dict[str, object] | None,
+        verifier: LoadedVerifier | None = None,
+        runtime_label_backend: str = BASELINE_RUNTIME_LABEL_BACKEND,
+        external_kws_model: str = ENSEMBLE_AST_SUPERB_MODEL_ID,
+        external_kws_device: str = "mps",
+    ) -> None:
+        self.model = model
+        self.frontend = frontend
+        self.device = device
+        self.command31_labels = list(command31_labels)
+        self.wheel = wheel
+        self.gate = gate
+        self.hop_seconds = float(hop_seconds)
+        self.ema_alpha = float(ema_alpha)
+        self.hold_s = max(0.0, float(hold_ms) / 1000.0)
+        self.selected_device_label = str(selected_device_label)
+        self.input_device_name = str(input_device_name)
+        self.stream_sample_rate = float(max(1.0, stream_sample_rate))
+        self.model_sample_rate = int(max(1, model_sample_rate))
+        self.audio_seconds = float(max(0.1, audio_seconds))
+        self.mic_precheck_seconds = float(max(0.0, mic_precheck_seconds))
+        self.mic_min_rms = float(max(1e-6, mic_min_rms))
+        self.auto_gain = bool(auto_gain)
+        self.target_rms = float(max(1e-6, target_rms))
+        self.max_gain_db = float(max(0.0, max_gain_db))
+        self.display_conf_thr = float(max(0.0, display_conf_thr))
+        self.display_wake_thr = float(max(0.0, display_wake_thr))
+        self.passive_profile = passive_profile
+        self.keyword_calibration = dict(keyword_calibration or {})
+        self.verifier = verifier
+        self.default_vote_window = int(vote_window)
+        self.default_vote_min_count = int(vote_min_count)
+        self.runtime_label_backend = str(runtime_label_backend)
+        self.external_kws_model = str(external_kws_model)
+        self.external_kws_device = str(external_kws_device)
+
+        self._stream_clip_samples = int(round(self.audio_seconds * self.stream_sample_rate))
+        self._model_clip_samples = int(round(self.audio_seconds * float(self.model_sample_rate)))
+        self._buffer = AudioRingBuffer(self._stream_clip_samples)
+        self._last_infer_at = 0.0
+        self._ema_probs: Optional[np.ndarray] = None
+        self._ema_wake: Optional[float] = None
+        self._label_smoother = TemporalLabelSmoother(
+            window_size=int(vote_window),
+            min_count=int(vote_min_count),
+            hold_seconds=self.hold_s,
+            max_window_size=max(int(vote_window), 6),
+        )
+        self._highlight_preview = HighlightPreviewState()
+        self._resample_needed = int(round(self.stream_sample_rate)) != int(self.model_sample_rate)
+        self._resampler = (
+            ta_transforms.Resample(orig_freq=int(round(self.stream_sample_rate)), new_freq=self.model_sample_rate)
+            if self._resample_needed
+            else None
+        )
+        self._precheck_started_at = 0.0
+        self._precheck_rms_hist: deque[float] = deque(maxlen=256)
+        self._precheck_peak_hist: deque[float] = deque(maxlen=256)
+        self._precheck_passed = False
+        self._mic_state = MIC_CHECK
+        self._mic_rms = 0.0
+        self._input_gain_db = 0.0
+        self._is_clipping = False
+        self._precheck_threshold = self.mic_min_rms
+        self._last_active_label: str | None = None
+        self._active_label_streak = 0
+        self._last_profile_update_at: Dict[str, float] = {}
+        self.current_snapshot: DemoSnapshot | None = None
+        self.reset_precheck(0.0)
+
+    def reset_precheck(self, now: float) -> None:
+        self._precheck_started_at = float(now)
+        self._precheck_rms_hist.clear()
+        self._precheck_peak_hist.clear()
+        self._precheck_passed = False
+        self._mic_state = MIC_CHECK
+        self._label_smoother.reset()
+        self._highlight_preview.reset()
+        self._precheck_threshold = self.mic_min_rms
+        self._buffer = AudioRingBuffer(self._stream_clip_samples)
+        self._last_infer_at = float(now)
+        self._ema_probs = None
+        self._ema_wake = None
+        self._last_active_label = None
+        self._active_label_streak = 0
+        self.gate.reset(now=float(now))
+
+    def bypass_precheck(self) -> None:
+        self._precheck_passed = True
+        self._mic_state = MIC_RUNNING
+        self._precheck_threshold = 0.0
+
+    def _update_precheck(self, now: float, chunk_rms: float, chunk_peak: float) -> None:
+        self._precheck_rms_hist.append(float(chunk_rms))
+        self._precheck_peak_hist.append(float(chunk_peak))
+        if self._precheck_passed:
+            self._mic_state = MIC_RUNNING
+            return
+        elapsed = now - self._precheck_started_at
+        if elapsed < self.mic_precheck_seconds:
+            self._mic_state = MIC_CHECK
+            return
+        med = float(np.median(np.asarray(self._precheck_rms_hist, dtype=np.float64))) if self._precheck_rms_hist else 0.0
+        peak95 = (
+            float(np.percentile(np.asarray(self._precheck_peak_hist, dtype=np.float64), 95.0))
+            if self._precheck_peak_hist
+            else 0.0
+        )
+        state, threshold = classify_precheck_signal(med, peak95, self.mic_min_rms)
+        self._precheck_threshold = float(threshold)
+        if state == MIC_RUNNING:
+            self._precheck_passed = True
+            self._mic_state = MIC_RUNNING
+        else:
+            self._mic_state = state
+
+    def _build_snapshot(
+        self,
+        *,
+        now_wall: float,
+        gate_open: bool,
+        gate_state: str,
+        command_label: str,
+        display_label: str,
+        active_label: str | None,
+        highlight_label: str | None,
+        command_conf: float,
+        wake_prob: float,
+        wake_open_thr: float,
+        wake_close_thr: float,
+        latency_ms: float,
+        prompt_status: str,
+        queue_fill_ratio: float,
+        error_message: str = "",
+        runtime_label_backend: str = "",
+        backend_note: str = "",
+    ) -> DemoSnapshot:
+        snapshot = DemoSnapshot(
+            updated_at=now_wall,
+            gate_open=gate_open,
+            gate_state=gate_state,
+            command_label=command_label,
+            display_label=display_label,
+            active_label=active_label,
+            highlight_label=highlight_label,
+            command_conf=float(command_conf),
+            wake_prob=float(wake_prob),
+            wake_open_thr=float(wake_open_thr),
+            wake_close_thr=float(wake_close_thr),
+            latency_ms=float(latency_ms),
+            prompt_word="",
+            prompt_status=prompt_status,
+            device=str(self.device),
+            selected_device=self.selected_device_label,
+            queue_fill_ratio=float(queue_fill_ratio),
+            mic_state=self._mic_state,
+            mic_rms=float(self._mic_rms),
+            input_gain_db=float(self._input_gain_db),
+            is_clipping=bool(self._is_clipping),
+            precheck_passed=bool(self._precheck_passed),
+            precheck_threshold=float(self._precheck_threshold),
+            stream_sample_rate=float(self.stream_sample_rate),
+            input_device_name=self.input_device_name,
+            error_message=str(error_message),
+            runtime_label_backend=str(runtime_label_backend),
+            backend_note=str(backend_note),
+        )
+        self.current_snapshot = snapshot
+        return snapshot
+
+    def build_runtime_error_snapshot(self, exc: Exception, *, now_wall: float, queue_fill_ratio: float = 0.0) -> DemoSnapshot:
+        self._mic_state = MIC_RUNTIME_ERROR
+        return self._build_snapshot(
+            now_wall=now_wall,
+            gate_open=False,
+            gate_state="error",
+            command_label="silence",
+            display_label="ERROR",
+            active_label=None,
+            highlight_label=None,
+            command_conf=0.0,
+            wake_prob=0.0,
+            wake_open_thr=self.gate.open_threshold,
+            wake_close_thr=self.gate.close_threshold,
+            latency_ms=0.0,
+            prompt_status=MIC_RUNTIME_ERROR,
+            queue_fill_ratio=queue_fill_ratio,
+            error_message=f"{type(exc).__name__}: {exc}",
+            runtime_label_backend=self.runtime_label_backend,
+        )
+
+    def _resolve_runtime_label_probs(
+        self,
+        *,
+        detector_command_probs: np.ndarray,
+        model_waveform_np: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, str, str]:
+        detector_kws12 = aggregate_command_probs_to_kws12(detector_command_probs, self.command31_labels)
+        if self.runtime_label_backend != DEFAULT_RUNTIME_LABEL_BACKEND:
+            return detector_command_probs, detector_kws12, BASELINE_RUNTIME_LABEL_BACKEND, ""
+        try:
+            external = predict_kws12_from_waveforms(
+                [model_waveform_np],
+                model_id=self.external_kws_model,
+                device=self.external_kws_device,
+                sample_rate=self.model_sample_rate,
+            )
+            kws12_probs = external.probs[0].astype(np.float32, copy=False)
+            command_probs = _command31_probs_from_kws12_probs(kws12_probs, self.command31_labels)
+            return command_probs, kws12_probs, f"{DEFAULT_RUNTIME_LABEL_BACKEND}@{external.runtime_device}", ""
+        except Exception as exc:
+            note = f"{type(exc).__name__}: {exc}"
+            return detector_command_probs, detector_kws12, "detector-fallback", note
+
+    def process_chunk(
+        self,
+        chunk: np.ndarray,
+        *,
+        now: float,
+        now_wall: float,
+        queue_fill_ratio: float = 0.0,
+    ) -> DemoSnapshot | None:
+        chunk = np.asarray(chunk, dtype=np.float32)
+        chunk_rms = _compute_rms(chunk)
+        chunk_peak = float(np.max(np.abs(chunk))) if chunk.size > 0 else 0.0
+        self._mic_rms = chunk_rms
+        self._buffer.append(chunk)
+        self._update_precheck(now, chunk_rms, chunk_peak)
+
+        if not self._precheck_passed:
+            status = self._mic_state if self._mic_state != MIC_CHECK else MIC_CHECK
+            display = "MIC CHECK" if status == MIC_CHECK else _mic_state_label(status)
+            return self._build_snapshot(
+                now_wall=now_wall,
+                gate_open=False,
+                gate_state="mic_check",
+                command_label="silence",
+                display_label=display,
+                active_label=None,
+                highlight_label=None,
+                command_conf=0.0,
+                wake_prob=0.0,
+                wake_open_thr=self.gate.open_threshold,
+                wake_close_thr=self.gate.close_threshold,
+                latency_ms=0.0,
+                prompt_status=status,
+                queue_fill_ratio=queue_fill_ratio,
+                runtime_label_backend=self.runtime_label_backend,
+            )
+
+        if not self._buffer.is_ready:
+            return None
+        if (now - self._last_infer_at) < self.hop_seconds:
+            return None
+        self._last_infer_at = now
+
+        raw_waveform_np = self._buffer.latest()
+        self._mic_rms = _compute_rms(raw_waveform_np)
+        gain_lin, gain_db = compute_auto_gain(self._mic_rms, self.target_rms, self.max_gain_db, self.auto_gain)
+        self._input_gain_db = gain_db
+        waveform_np = raw_waveform_np.copy()
+        waveform_np *= float(gain_lin)
+        self._is_clipping = bool(np.max(np.abs(waveform_np)) >= 0.999)
+        np.clip(waveform_np, -1.0, 1.0, out=waveform_np)
+
+        waveform = torch.from_numpy(waveform_np)
+        if self._resample_needed:
+            waveform = self._resampler(waveform.unsqueeze(0)).squeeze(0)
+        waveform = pad_or_trim(waveform, target_samples=self._model_clip_samples)
+        waveform_model_np = waveform.detach().cpu().numpy().astype(np.float32, copy=False)
+        feature = self.frontend(waveform)
+        mean = feature.mean()
+        std = feature.std().clamp(min=1e-5)
+        feature = (feature - mean) / std
+        x = feature.unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            t0 = time.perf_counter()
+            out = self.model(x)
+            _sync_device(self.device)
+            t1 = time.perf_counter()
+            probs = torch.softmax(out.command_logits, dim=-1).squeeze(0).detach().cpu().numpy()
+            wake_prob = float(torch.sigmoid(out.wake_logits).squeeze(0).item())
+            embedding = out.embedding.squeeze(0).detach().cpu()
+
+        self._ema_probs = ema_update(self._ema_probs, probs, self.ema_alpha)
+        self._ema_wake = ema_update_scalar(self._ema_wake, wake_prob, self.ema_alpha)
+
+        detector_command_label = self.command31_labels[int(np.argmax(self._ema_probs))]
+        detector_command_conf = float(np.max(self._ema_probs))
+        wake_prob_s = float(self._ema_wake)
+        decision_command_probs, runtime_kws12_probs, backend_name, backend_note = self._resolve_runtime_label_probs(
+            detector_command_probs=self._ema_probs,
+            model_waveform_np=waveform_model_np,
+        )
+        runtime_command_conf = float(np.max(runtime_kws12_probs)) if runtime_kws12_probs.size else detector_command_conf
+        runtime_top_label = KWS12_LABELS[int(np.argmax(runtime_kws12_probs))] if runtime_kws12_probs.size else detector_command_label
+        gate_command_conf = detector_command_conf if backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"} else max(detector_command_conf, runtime_command_conf)
+        gate_open, gate_state, open_thr, close_thr = self.gate.update(
+            now=now,
+            wake_prob=wake_prob_s,
+            command_conf=gate_command_conf,
+        )
+        decision_gate_open = bool(gate_open)
+        decision_gate_state = str(gate_state)
+        decision_display_wake_thr = self.display_wake_thr
+        if backend_name.startswith(DEFAULT_RUNTIME_LABEL_BACKEND):
+            if runtime_top_label in TARGET_KEYWORDS_10 and runtime_command_conf >= max(0.80, self.display_conf_thr):
+                decision_gate_open = True
+                if not gate_open:
+                    decision_gate_state = "open"
+            decision_display_wake_thr = 0.0
+        raw_active_label, _fallback_display_label, _raw_decision_conf = resolve_display_candidate(
+            self.wheel,
+            self.command31_labels,
+            decision_command_probs,
+            decision_gate_open,
+        )
+        prototype_similarity = 0.0
+        if raw_active_label in TARGET_KEYWORDS_10 and self.passive_profile is not None:
+            prototype_similarity = self.passive_profile.similarity(raw_active_label, embedding)
+        decision = shared_resolve_runtime_decision(
+            now=now,
+            wheel=self.wheel,
+            command31_labels=self.command31_labels,
+            command_probs=decision_command_probs,
+            gate_open=decision_gate_open,
+            gate_state=decision_gate_state,
+            wake_prob=wake_prob_s,
+            display_wake_thr=decision_display_wake_thr,
+            calibration=self.keyword_calibration,
+            default_conf_thr=self.display_conf_thr,
+            default_vote_window=self.default_vote_window,
+            default_vote_min_count=self.default_vote_min_count,
+            smoother=self._label_smoother,
+            preview=self._highlight_preview,
+            prototype_similarity=prototype_similarity,
+            listening_label="LISTENING",
+            listening_message="Listening for a stable keyword match.",
+            calibrating_label="CALIBRATING",
+            calibrating_message="Calibrating the live gate. Keep speaking naturally.",
+            matched_message_template="Detected '{label}' in the live stream.",
+        )
+        active_label = decision.active_label
+        display_label = decision.display_label
+        highlight_label = decision.highlight_label
+        decision_conf = decision.command_confidence
+        detector_kws12_probs = aggregate_command_probs_to_kws12(self._ema_probs, self.command31_labels)
+        detector_label = KWS12_LABELS[int(np.argmax(detector_kws12_probs))]
+        if detector_kws12_probs.size > 1:
+            top2 = np.partition(detector_kws12_probs, -2)[-2:]
+            detector_margin = float(top2[-1] - top2[-2])
+        else:
+            detector_margin = float(detector_kws12_probs[int(np.argmax(detector_kws12_probs))])
+
+        verifier_confirmed = True
+        if backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"}:
+            verifier_candidate = active_label or select_verifier_candidate(
+                detector_label=detector_label,
+                detector_margin=detector_margin,
+                detector_probs_kws12=detector_kws12_probs,
+                decision_profile="stable",
+                margin_trigger=0.20,
+            )
+            verifier_decision = None
+            if verifier_candidate in TARGET_KEYWORDS_10:
+                verifier_decision = verify_keyword(
+                    self.verifier,
+                    feature.unsqueeze(0),
+                    candidate_label=verifier_candidate,
+                )
+            verifier_confirmed = verifier_decision is None or verifier_decision.accepted
+            if verifier_candidate in TARGET_KEYWORDS_10 and not verifier_confirmed:
+                active_label = None
+                display_label = "UNKNOWN"
+                decision_conf = 0.0
+        if active_label is not None and active_label == self._last_active_label:
+            self._active_label_streak += 1
+        elif active_label is not None:
+            self._last_active_label = active_label
+            self._active_label_streak = 1
+        else:
+            self._last_active_label = None
+            self._active_label_streak = 0
+
+        if (
+            self.passive_profile is not None
+            and active_label in TARGET_KEYWORDS_10
+            and verifier_confirmed
+            and wake_prob_s >= 0.92
+            and decision_conf >= 0.85
+            and self._active_label_streak >= 3
+        ):
+            last_update = self._last_profile_update_at.get(active_label, 0.0)
+            if (now - last_update) >= 1.0:
+                self.passive_profile.update(active_label, embedding)
+                self._last_profile_update_at[active_label] = now
+
+        prompt_status = decision.prompt_label
+        if active_label is None and prompt_status == "MATCH":
+            prompt_status = "LISTENING"
+        return self._build_snapshot(
+            now_wall=now_wall,
+            gate_open=gate_open,
+            gate_state=gate_state,
+            command_label=runtime_top_label if self.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND else detector_command_label,
+            display_label=display_label,
+            active_label=active_label,
+            highlight_label=highlight_label,
+            command_conf=decision_conf,
+            wake_prob=wake_prob_s,
+            wake_open_thr=float(open_thr),
+            wake_close_thr=float(close_thr),
+            latency_ms=(t1 - t0) * 1000.0,
+            prompt_status=prompt_status,
+            queue_fill_ratio=queue_fill_ratio,
+            runtime_label_backend=backend_name,
+            backend_note=backend_note,
+        )
+
+
 class InferenceWorker(threading.Thread):
     def __init__(
         self,
@@ -785,180 +1523,47 @@ class InferenceWorker(threading.Thread):
         reset_precheck_event: threading.Event,
         passive_profile: PassiveKeywordProfile | None,
         keyword_calibration: Dict[str, object] | None,
+        verifier: LoadedVerifier | None = None,
+        runtime_label_backend: str = BASELINE_RUNTIME_LABEL_BACKEND,
+        external_kws_model: str = ENSEMBLE_AST_SUPERB_MODEL_ID,
+        external_kws_device: str = "mps",
     ) -> None:
         super().__init__(daemon=True)
         self.q = q
         self.stop = stop
         self.lock = lock
         self.snapshot_ref = snapshot_ref
-        self.model = model
-        self.frontend = frontend
-        self.device = device
-        self.command31_labels = list(command31_labels)
-        self.wheel = wheel
-        self.gate = gate
-        self.hop_seconds = float(hop_seconds)
-        self.ema_alpha = float(ema_alpha)
-        self.hold_s = max(0.0, float(hold_ms) / 1000.0)
-        self.selected_device_label = selected_device_label
-        self.input_device_name = str(input_device_name)
-        self.stream_sample_rate = float(max(1.0, stream_sample_rate))
-        self.model_sample_rate = int(max(1, model_sample_rate))
-        self.audio_seconds = float(max(0.1, audio_seconds))
-
-        self.mic_precheck_seconds = float(max(0.0, mic_precheck_seconds))
-        self.mic_min_rms = float(max(1e-6, mic_min_rms))
-        self.auto_gain = bool(auto_gain)
-        self.target_rms = float(max(1e-6, target_rms))
-        self.max_gain_db = float(max(0.0, max_gain_db))
-        self.display_conf_thr = float(max(0.0, display_conf_thr))
-        self.display_wake_thr = float(max(0.0, display_wake_thr))
         self.reset_precheck_event = reset_precheck_event
-        self.passive_profile = passive_profile
-        self.keyword_calibration = dict(keyword_calibration or {})
-        self.default_vote_window = int(vote_window)
-        self.default_vote_min_count = int(vote_min_count)
-
-        self._stream_clip_samples = int(round(self.audio_seconds * self.stream_sample_rate))
-        self._model_clip_samples = int(round(self.audio_seconds * float(self.model_sample_rate)))
-        self._buffer = AudioRingBuffer(self._stream_clip_samples)
-        self._last_infer_at = 0.0
-        self._ema_probs: Optional[np.ndarray] = None
-        self._ema_wake: Optional[float] = None
-        self._label_smoother = TemporalLabelSmoother(
-            window_size=int(vote_window),
-            min_count=int(vote_min_count),
-            hold_seconds=self.hold_s,
-            max_window_size=max(int(vote_window), 6),
-        )
-        self._highlight_preview = HighlightPreviewState()
-        self._resample_needed = int(round(self.stream_sample_rate)) != int(self.model_sample_rate)
-        self._resampler = (
-            ta_transforms.Resample(orig_freq=int(round(self.stream_sample_rate)), new_freq=self.model_sample_rate)
-            if self._resample_needed
-            else None
-        )
-
-        self._precheck_started_at = time.monotonic()
-        self._precheck_rms_hist: deque[float] = deque(maxlen=256)
-        self._precheck_peak_hist: deque[float] = deque(maxlen=256)
-        self._precheck_passed = False
-        self._mic_state = MIC_CHECK
-        self._mic_rms = 0.0
-        self._input_gain_db = 0.0
-        self._is_clipping = False
-        self._precheck_threshold = self.mic_min_rms
-        self._last_active_label: str | None = None
-        self._active_label_streak = 0
-        self._last_profile_update_at: Dict[str, float] = {}
-
-    def _reset_precheck(self, now: float) -> None:
-        self._precheck_started_at = now
-        self._precheck_rms_hist.clear()
-        self._precheck_peak_hist.clear()
-        self._precheck_passed = False
-        self._mic_state = MIC_CHECK
-        self._label_smoother.reset()
-        self._highlight_preview.reset()
-        self._precheck_threshold = self.mic_min_rms
-
-    def _update_precheck(self, now: float, chunk_rms: float, chunk_peak: float) -> None:
-        self._precheck_rms_hist.append(float(chunk_rms))
-        self._precheck_peak_hist.append(float(chunk_peak))
-
-        if self._precheck_passed:
-            self._mic_state = MIC_RUNNING
-            return
-
-        elapsed = now - self._precheck_started_at
-        if elapsed < self.mic_precheck_seconds:
-            self._mic_state = MIC_CHECK
-            return
-
-        med = float(np.median(np.asarray(self._precheck_rms_hist, dtype=np.float64))) if self._precheck_rms_hist else 0.0
-        peak95 = (
-            float(np.percentile(np.asarray(self._precheck_peak_hist, dtype=np.float64), 95.0))
-            if self._precheck_peak_hist
-            else 0.0
-        )
-        state, threshold = classify_precheck_signal(med, peak95, self.mic_min_rms)
-        self._precheck_threshold = float(threshold)
-        if state == MIC_RUNNING:
-            self._precheck_passed = True
-            self._mic_state = MIC_RUNNING
-        else:
-            self._mic_state = state
-
-    def _publish_snapshot(
-        self,
-        *,
-        now_wall: float,
-        gate_open: bool,
-        gate_state: str,
-        command_label: str,
-        display_label: str,
-        active_label: str | None,
-        highlight_label: str | None,
-        command_conf: float,
-        wake_prob: float,
-        wake_open_thr: float,
-        wake_close_thr: float,
-        latency_ms: float,
-        prompt_status: str,
-        error_message: str = "",
-    ) -> None:
-        qmax = self.q.maxsize if self.q.maxsize > 0 else 1
-        queue_fill_ratio = min(1.0, float(self.q.qsize()) / float(qmax))
-
-        snapshot = DemoSnapshot(
-            updated_at=now_wall,
-            gate_open=gate_open,
-            gate_state=gate_state,
-            command_label=command_label,
-            display_label=display_label,
-            active_label=active_label,
-            highlight_label=highlight_label,
-            command_conf=float(command_conf),
-            wake_prob=float(wake_prob),
-            wake_open_thr=float(wake_open_thr),
-            wake_close_thr=float(wake_close_thr),
-            latency_ms=float(latency_ms),
-            prompt_word="",
-            prompt_status=prompt_status,
-            device=str(self.device),
-            selected_device=self.selected_device_label,
-            queue_fill_ratio=queue_fill_ratio,
-            mic_state=self._mic_state,
-            mic_rms=float(self._mic_rms),
-            input_gain_db=float(self._input_gain_db),
-            is_clipping=bool(self._is_clipping),
-            precheck_passed=bool(self._precheck_passed),
-            precheck_threshold=float(self._precheck_threshold),
-            stream_sample_rate=float(self.stream_sample_rate),
-            input_device_name=self.input_device_name,
-            error_message=str(error_message),
-        )
-        with self.lock:
-            self.snapshot_ref[0] = snapshot
-
-    def _publish_runtime_error(self, exc: Exception) -> None:
-        message = f"{type(exc).__name__}: {exc}"
-        self._mic_state = MIC_RUNTIME_ERROR
-        self._publish_snapshot(
-            now_wall=time.time(),
-            gate_open=False,
-            gate_state="error",
-            command_label="silence",
-            display_label="ERROR",
-            active_label=None,
-            highlight_label=None,
-            command_conf=0.0,
-            wake_prob=0.0,
-            wake_open_thr=self.gate.open_threshold,
-            wake_close_thr=self.gate.close_threshold,
-            latency_ms=0.0,
-            prompt_status=MIC_RUNTIME_ERROR,
-            error_message=message,
+        self.engine = RealtimeEngine(
+            model=model,
+            frontend=frontend,
+            device=device,
+            command31_labels=command31_labels,
+            wheel=wheel,
+            gate=gate,
+            hop_seconds=hop_seconds,
+            ema_alpha=ema_alpha,
+            hold_ms=hold_ms,
+            selected_device_label=selected_device_label,
+            input_device_name=input_device_name,
+            stream_sample_rate=stream_sample_rate,
+            model_sample_rate=model_sample_rate,
+            audio_seconds=audio_seconds,
+            mic_precheck_seconds=mic_precheck_seconds,
+            mic_min_rms=mic_min_rms,
+            auto_gain=auto_gain,
+            target_rms=target_rms,
+            max_gain_db=max_gain_db,
+            display_conf_thr=display_conf_thr,
+            display_wake_thr=display_wake_thr,
+            vote_window=vote_window,
+            vote_min_count=vote_min_count,
+            passive_profile=passive_profile,
+            keyword_calibration=keyword_calibration,
+            verifier=verifier,
+            runtime_label_backend=runtime_label_backend,
+            external_kws_model=external_kws_model,
+            external_kws_device=external_kws_device,
         )
 
     def run(self) -> None:
@@ -966,192 +1571,27 @@ class InferenceWorker(threading.Thread):
             while not self.stop.is_set():
                 if self.reset_precheck_event.is_set():
                     self.reset_precheck_event.clear()
-                    self._reset_precheck(time.monotonic())
-
+                    self.engine.reset_precheck(time.monotonic())
                 try:
                     chunk = self.q.get(timeout=0.1)
                 except queue.Empty:
                     continue
-
-                chunk = np.asarray(chunk, dtype=np.float32)
-                chunk_rms = _compute_rms(chunk)
-                chunk_peak = float(np.max(np.abs(chunk))) if chunk.size > 0 else 0.0
-                self._mic_rms = chunk_rms
-
-                self._buffer.append(chunk)
-
-                now = time.monotonic()
-                self._update_precheck(now, chunk_rms, chunk_peak)
-
-                if not self._precheck_passed:
-                    status = self._mic_state if self._mic_state != MIC_CHECK else MIC_CHECK
-                    display = "MIC CHECK" if status == MIC_CHECK else _mic_state_label(status)
-                    self._publish_snapshot(
-                        now_wall=time.time(),
-                        gate_open=False,
-                        gate_state="mic_check",
-                        command_label="silence",
-                        display_label=display,
-                        active_label=None,
-                        highlight_label=None,
-                        command_conf=0.0,
-                        wake_prob=0.0,
-                        wake_open_thr=self.gate.open_threshold,
-                        wake_close_thr=self.gate.close_threshold,
-                        latency_ms=0.0,
-                        prompt_status=status,
-                    )
-                    continue
-
-                if not self._buffer.is_ready:
-                    continue
-
-                if (now - self._last_infer_at) < self.hop_seconds:
-                    continue
-                self._last_infer_at = now
-
-                raw_waveform_np = self._buffer.latest()
-                self._mic_rms = _compute_rms(raw_waveform_np)
-                gain_lin, gain_db = compute_auto_gain(self._mic_rms, self.target_rms, self.max_gain_db, self.auto_gain)
-                self._input_gain_db = gain_db
-                waveform_np = raw_waveform_np.copy()
-                waveform_np *= float(gain_lin)
-                self._is_clipping = bool(np.max(np.abs(waveform_np)) >= 0.999)
-                np.clip(waveform_np, -1.0, 1.0, out=waveform_np)
-
-                waveform = torch.from_numpy(waveform_np)
-                if self._resample_needed:
-                    waveform = self._resampler(waveform.unsqueeze(0)).squeeze(0)
-                waveform = pad_or_trim(waveform, target_samples=self._model_clip_samples)
-                feature = self.frontend(waveform)
-                mean = feature.mean()
-                std = feature.std().clamp(min=1e-5)
-                feature = (feature - mean) / std
-                x = feature.unsqueeze(0).to(self.device)
-
-                with torch.no_grad():
-                    t0 = time.perf_counter()
-                    out = self.model(x)
-                    _sync_device(self.device)
-                    t1 = time.perf_counter()
-
-                    probs = torch.softmax(out.command_logits, dim=-1).squeeze(0).detach().cpu().numpy()
-                    wake_prob = float(torch.sigmoid(out.wake_logits).squeeze(0).item())
-                    embedding = out.embedding.squeeze(0).detach().cpu()
-
-                self._ema_probs = ema_update(self._ema_probs, probs, self.ema_alpha)
-                self._ema_wake = ema_update_scalar(self._ema_wake, wake_prob, self.ema_alpha)
-
-                command_idx = int(np.argmax(self._ema_probs))
-                command_label = self.command31_labels[command_idx]
-                raw_command_conf = float(np.max(self._ema_probs))
-                wake_prob_s = float(self._ema_wake)
-
-                gate_open, gate_state, open_thr, close_thr = self.gate.update(
-                    now=now,
-                    wake_prob=wake_prob_s,
-                    command_conf=raw_command_conf,
-                )
-
-                raw_active_label, fallback_display_label, decision_conf = resolve_display_candidate(
-                    self.wheel,
-                    self.command31_labels,
-                    self._ema_probs,
-                    gate_open,
-                )
-                keyword_conf_thr, vote_window, vote_min_count, prototype_bonus_cap, min_margin, highlight_hold_ms = _keyword_runtime_params(
-                    self.keyword_calibration,
-                    raw_active_label,
-                    default_conf_thr=self.display_conf_thr,
-                    default_vote_window=self.default_vote_window,
-                    default_vote_min_count=self.default_vote_min_count,
-                )
-                prototype_similarity = 0.0
-                if raw_active_label in TARGET_KEYWORDS_10 and self.passive_profile is not None:
-                    prototype_similarity = self.passive_profile.similarity(raw_active_label, embedding)
-                decision_conf = blend_keyword_score(
-                    decision_conf,
-                    wake_prob_s,
-                    prototype_similarity,
-                    prototype_bonus_cap=prototype_bonus_cap,
-                )
-                passes_margin, _margin = _passes_confusion_guardrail(
-                    candidate_label=raw_active_label,
-                    command_probs=self._ema_probs,
-                    command31_labels=self.command31_labels,
-                    calibration=self.keyword_calibration,
-                    min_margin=min_margin,
-                )
-                accepted_label = _accept_display_candidate(
-                    gate_open=gate_open,
-                    candidate_label=raw_active_label if passes_margin else None,
-                    command_conf=decision_conf,
-                    wake_prob=wake_prob_s,
-                    min_command_conf=keyword_conf_thr,
-                    min_wake_prob=self.display_wake_thr,
-                )
-                active_label = self._label_smoother.update(
-                    now=now,
-                    candidate_label=accepted_label,
-                    min_count_override=vote_min_count,
-                    window_size_override=vote_window,
-                )
-                display_label = active_label if active_label is not None else fallback_display_label
-                preview_candidate = _accept_display_candidate(
-                    gate_open=gate_open,
-                    candidate_label=raw_active_label if passes_margin else None,
-                    command_conf=decision_conf,
-                    wake_prob=wake_prob_s,
-                    min_command_conf=keyword_conf_thr,
-                    min_wake_prob=self.display_wake_thr,
-                )
-                highlight_label = self._highlight_preview.update(
-                    now=now,
-                    candidate_label=active_label if active_label is not None else preview_candidate,
-                    hold_seconds=float(highlight_hold_ms) / 1000.0,
-                )
-
-                if active_label is not None and active_label == self._last_active_label:
-                    self._active_label_streak += 1
-                elif active_label is not None:
-                    self._last_active_label = active_label
-                    self._active_label_streak = 1
-                else:
-                    self._last_active_label = None
-                    self._active_label_streak = 0
-
-                if (
-                    self.passive_profile is not None
-                    and active_label in TARGET_KEYWORDS_10
-                    and wake_prob_s >= 0.92
-                    and decision_conf >= 0.85
-                    and self._active_label_streak >= 3
-                ):
-                    last_update = self._last_profile_update_at.get(active_label, 0.0)
-                    if (now - last_update) >= 1.0:
-                        self.passive_profile.update(active_label, embedding)
-                        self._last_profile_update_at[active_label] = now
-
-                prompt_status = "MATCH" if active_label is not None else "LISTENING"
-
-                self._publish_snapshot(
+                qmax = self.q.maxsize if self.q.maxsize > 0 else 1
+                queue_fill_ratio = min(1.0, float(self.q.qsize()) / float(qmax))
+                snapshot = self.engine.process_chunk(
+                    chunk,
+                    now=time.monotonic(),
                     now_wall=time.time(),
-                    gate_open=gate_open,
-                    gate_state=gate_state,
-                    command_label=command_label,
-                    display_label=display_label,
-                    active_label=active_label,
-                    highlight_label=highlight_label,
-                    command_conf=decision_conf,
-                    wake_prob=wake_prob_s,
-                    wake_open_thr=float(open_thr),
-                    wake_close_thr=float(close_thr),
-                    latency_ms=(t1 - t0) * 1000.0,
-                    prompt_status=prompt_status,
+                    queue_fill_ratio=queue_fill_ratio,
                 )
+                if snapshot is not None:
+                    with self.lock:
+                        self.snapshot_ref[0] = snapshot
         except Exception as exc:
             self.stop.set()
-            self._publish_runtime_error(exc)
+            snapshot = self.engine.build_runtime_error_snapshot(exc, now_wall=time.time())
+            with self.lock:
+                self.snapshot_ref[0] = snapshot
 
 
 def _list_audio_devices() -> None:
@@ -1348,61 +1788,27 @@ def main() -> None:
     worker: InferenceWorker | None = None
 
     try:
-        ckpt_arg = args.checkpoint.strip()
-        used_auto = ckpt_arg.lower() == "auto"
-        ranked_runtime_device = ""
-        if used_auto:
-            try:
-                ckpt_path, ranked_runtime_device = select_best_checkpoint(
-                    outputs_root="outputs",
-                    device=args.device,
-                    benchmark_iters=int(args.ranking_iters),
-                    use_cache=not args.no_cache_ranking,
-                    rebuild=bool(args.rebuild_ranking),
-                )
-            except Exception as exc:
-                msg = _checkpoint_error_message(
-                    Path("outputs").resolve(),
-                    used_auto=True,
-                    details=str(exc),
-                    outputs_root="outputs",
-                )
-                raise RuntimeError(msg) from exc
-        else:
-            ckpt_path = Path(ckpt_arg).expanduser().resolve()
-
-        if not ckpt_path.exists():
-            msg = _checkpoint_error_message(ckpt_path, used_auto=used_auto, outputs_root="outputs")
-            raise FileNotFoundError(msg)
-
-        try:
-            checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        except Exception as exc:
-            msg = _checkpoint_error_message(
-                ckpt_path,
-                used_auto=used_auto,
-                details=str(exc),
-                outputs_root="outputs",
-            )
-            raise RuntimeError(msg) from exc
+        bundle = load_realtime_demo(
+            checkpoint=args.checkpoint,
+            demo_profile=args.demo_profile,
+            detector_device_preference=args.device,
+            selection_profile=args.selection_profile,
+            wheel=args.wheel,
+            runtime_label_backend=args.runtime_label_backend,
+            external_kws_model=args.external_kws_model,
+            external_kws_device=args.external_kws_device,
+            ranking_iters=int(args.ranking_iters),
+            no_cache_ranking=bool(args.no_cache_ranking),
+            rebuild_ranking=bool(args.rebuild_ranking),
+            device_auto_bench_iters=int(args.device_auto_bench_iters),
+        )
+        ckpt_path = bundle.checkpoint_path
+        checkpoint = bundle.checkpoint_payload
         cfg = checkpoint["config"]
-        keyword_calibration = load_keyword_calibration(ckpt_path.parent / "keyword_calibration.json")
-        if not keyword_calibration and isinstance(checkpoint.get("keyword_calibration"), dict):
-            keyword_calibration = dict(checkpoint["keyword_calibration"])
-
-        if used_auto and ranked_runtime_device:
-            device, selected_device_label, _timings = _resolve_runtime_device(
-                preferred=ranked_runtime_device,
-                checkpoint=checkpoint,
-                benchmark_iters=int(args.device_auto_bench_iters),
-            )
-            selected_device_label = f"ranked->{device.type}"
-        else:
-            device, selected_device_label, _timings = _resolve_runtime_device(
-                preferred=args.device,
-                checkpoint=checkpoint,
-                benchmark_iters=int(args.device_auto_bench_iters),
-            )
+        keyword_calibration = bundle.keyword_calibration
+        device = bundle.runtime_device
+        selected_device_label = bundle.selected_device_label
+        verifier = bundle.verifier
 
         tuning = get_sensitivity_tuning(args.sensitivity_profile)
         cmd_conf_thr = float(args.cmd_conf_thr) if args.cmd_conf_thr is not None else tuning.cmd_conf_thr
@@ -1419,27 +1825,12 @@ def main() -> None:
             close_floor=tuning.close_floor,
         )
 
-        model = create_model(
-            cfg["model"],
-            n_mels=int(cfg["features"]["n_mels"]),
-            num_commands=len(checkpoint["label_set"]),
-        )
-        model.load_state_dict(checkpoint["model_state"])
-        model.to(device)
-        model.eval()
-
-        frontend = MelFrontend(
-            sample_rate=int(cfg["features"]["sample_rate"]),
-            n_fft=int(cfg["features"]["n_fft"]),
-            hop_length=int(cfg["features"]["hop_length"]),
-            n_mels=int(cfg["features"]["n_mels"]),
-            f_min=float(cfg["features"].get("f_min", 20.0)),
-            f_max=float(cfg["features"].get("f_max", 7600.0)),
-        )
+        model = bundle.model
+        frontend = bundle.frontend
 
         gate_mode, wake_open_thr, wake_close_thr = _resolve_gate_args(args)
 
-        command31_labels = checkpoint.get("label_set", COMMAND31_LABELS)
+        command31_labels = bundle.command31_labels
         wheel_labels = _wheel_labels(args.wheel, command31_labels)
 
         q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=16)
@@ -1594,6 +1985,10 @@ def main() -> None:
             reset_precheck_event=reset_precheck,
             passive_profile=passive_profile,
             keyword_calibration=keyword_calibration,
+            verifier=verifier,
+            runtime_label_backend=bundle.resolved_profile.runtime_label_backend,
+            external_kws_model=bundle.resolved_profile.external_kws_model,
+            external_kws_device=bundle.resolved_profile.external_kws_device,
         )
         worker.start()
         render_state: Dict[str, int | None] = {"active_idx": None}
@@ -1638,7 +2033,7 @@ def main() -> None:
                 hud.center.set_color("#f9e2af")
                 hud.status.set_text(
                     f"mic={MIC_CHECK} input={input_spec.name} sr={stream_sample_rate:.0f}->{model_sample_rate} "
-                    f"dev={selected_device_label} | Press R to retry, P for Mic settings"
+                    f"dev={selected_device_label} lbl={bundle.resolved_profile.runtime_label_backend} | Press R to retry, P for Mic settings"
                 )
                 return []
 
@@ -1656,7 +2051,8 @@ def main() -> None:
                 hud.status.set_text(
                     f"mic={snap.mic_state} input={snap.input_device_name} sr={snap.stream_sample_rate:.0f}->{model_sample_rate} "
                     f"rms={snap.mic_rms:.4f} thr={snap.precheck_threshold:.4f} gain={snap.input_gain_db:.1f}dB clip={int(snap.is_clipping)} "
-                    f"dev={snap.selected_device} q={snap.queue_fill_ratio:.2f}{error_suffix} | Press R retry, P Mic settings"
+                    f"dev={snap.selected_device} lbl={snap.runtime_label_backend or bundle.resolved_profile.runtime_label_backend} "
+                    f"q={snap.queue_fill_ratio:.2f}{error_suffix} | Press R retry, P Mic settings"
                 )
                 return []
 
@@ -1671,11 +2067,14 @@ def main() -> None:
                 hud.center.set_color("#ffffff" if snap.gate_open else "#cdd6f4")
 
             error_suffix = f" error={snap.error_message}" if snap.error_message else ""
+            backend_suffix = f" note={snap.backend_note}" if snap.backend_note else ""
             hud.status.set_text(
                 f"mic={snap.mic_state} input={snap.input_device_name} sr={snap.stream_sample_rate:.0f}->{model_sample_rate} "
                 f"rms={snap.mic_rms:.4f} thr={snap.precheck_threshold:.4f} gain={snap.input_gain_db:.1f}dB clip={int(snap.is_clipping)}  "
                 f"wake={snap.wake_prob:.3f} open={snap.wake_open_thr:.2f} close={snap.wake_close_thr:.2f} "
-                f"conf={snap.command_conf:.2f} lat={snap.latency_ms:5.1f}ms dev={snap.selected_device} q={snap.queue_fill_ratio:.2f}{error_suffix}"
+                f"conf={snap.command_conf:.2f} lat={snap.latency_ms:5.1f}ms dev={snap.selected_device} "
+                f"lbl={snap.runtime_label_backend or bundle.resolved_profile.runtime_label_backend} q={snap.queue_fill_ratio:.2f}"
+                f"{backend_suffix}{error_suffix}"
             )
 
             if snap.prompt_status == MIC_RUNTIME_ERROR:

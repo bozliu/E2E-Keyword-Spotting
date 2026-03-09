@@ -45,8 +45,12 @@ def test_active_label_target10() -> None:
 def test_parse_args_defaults_to_kws12(monkeypatch) -> None:
     monkeypatch.setattr("sys.argv", ["realtime"])
     args = parse_args()
+    assert args.demo_profile == "accuracy-first"
     assert args.wheel == "kws12"
     assert args.gate_mode == "adaptive"
+    assert args.device == "auto"
+    assert args.selection_profile == "stable"
+    assert args.sensitivity_profile == "strict"
 
 
 def test_aggregate_command_probs_to_kws12_merges_unknown_mass() -> None:

@@ -7,7 +7,7 @@ from typing import Dict, List
 import numpy as np
 from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score, roc_curve
 
-from kws.constants import COMMAND31_LABELS, IGNORE_INDEX, INDEX_TO_COMMAND31, command31_to_kws12
+from kws.constants import COMMAND31_LABELS, IGNORE_INDEX, INDEX_TO_COMMAND31, KWS12_LABELS, command31_to_kws12
 from kws.utils.keyword_focus import compute_keyword_balance, compute_per_keyword_metrics
 
 
@@ -40,27 +40,65 @@ def _to_kws12_indices(indices: np.ndarray) -> np.ndarray:
     return np.array(mapped, dtype=np.int64)
 
 
-def compute_kws12_accuracy(preds: np.ndarray, targets: np.ndarray) -> float:
-    valid = targets != IGNORE_INDEX
-    if valid.sum() == 0:
-        return 0.0
-    preds_kws12 = _to_kws12_indices(preds[valid])
-    targets_kws12 = _to_kws12_indices(targets[valid])
-    return float((preds_kws12 == targets_kws12).mean())
+def compute_per_class_kws12_from_indices(preds_kws12: np.ndarray, targets_kws12: np.ndarray) -> Dict[str, Dict[str, object]]:
+    empty = {
+        label: {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 0,
+            "predicted": 0,
+            "top_confusions": [],
+        }
+        for label in KWS12_LABELS
+    }
+    if preds_kws12.size == 0 or targets_kws12.size == 0:
+        return empty
+
+    cm = confusion_matrix(targets_kws12, preds_kws12, labels=np.arange(len(KWS12_LABELS)))
+
+    out: Dict[str, Dict[str, object]] = {}
+    for idx, label in enumerate(KWS12_LABELS):
+        row = cm[idx]
+        col = cm[:, idx]
+        support = int(row.sum())
+        predicted = int(col.sum())
+        tp = int(cm[idx, idx])
+        precision = float(tp / max(predicted, 1))
+        recall = float(tp / max(support, 1))
+        denom = precision + recall
+        f1 = float((2.0 * precision * recall) / denom) if denom > 0.0 else 0.0
+        confusions = [
+            {"label": KWS12_LABELS[j], "count": int(count)}
+            for j, count in enumerate(row.tolist())
+            if j != idx and int(count) > 0
+        ]
+        confusions.sort(key=lambda item: (-item["count"], str(item["label"])))
+        out[label] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": support,
+            "predicted": predicted,
+            "top_confusions": confusions[:3],
+        }
+    return out
 
 
-def compute_kws12_breakdown(preds: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
-    valid = targets != IGNORE_INDEX
-    if valid.sum() == 0:
+def compute_kws12_breakdown_from_indices(preds_kws12: np.ndarray, targets_kws12: np.ndarray) -> Dict[str, object]:
+    if preds_kws12.size == 0 or targets_kws12.size == 0:
         return {
             "kws12_target_precision": 0.0,
             "kws12_target_recall": 0.0,
             "kws12_unknown_to_target_errors": 0.0,
             "kws12_unknown_to_target_rate": 0.0,
+            "per_class_kws12": compute_per_class_kws12_from_indices(
+                np.zeros((0,), dtype=np.int64),
+                np.zeros((0,), dtype=np.int64),
+            ),
+            "min_kws12_precision": 0.0,
+            "min_kws12_recall": 0.0,
         }
-
-    preds_kws12 = _to_kws12_indices(preds[valid])
-    targets_kws12 = _to_kws12_indices(targets[valid])
 
     pred_target = preds_kws12 > 1
     true_target = targets_kws12 > 1
@@ -72,13 +110,55 @@ def compute_kws12_breakdown(preds: np.ndarray, targets: np.ndarray) -> Dict[str,
     unknown_mask = targets_kws12 == 1
     unknown_to_target = pred_target & unknown_mask
     unknown_count = int(unknown_mask.sum())
+    per_class = compute_per_class_kws12_from_indices(preds_kws12, targets_kws12)
+    min_precision = min(float(stats["precision"]) for stats in per_class.values()) if per_class else 0.0
+    min_recall = min(float(stats["recall"]) for stats in per_class.values()) if per_class else 0.0
 
     return {
         "kws12_target_precision": precision,
         "kws12_target_recall": recall,
         "kws12_unknown_to_target_errors": float(unknown_to_target.sum()),
         "kws12_unknown_to_target_rate": float(unknown_to_target.sum() / max(unknown_count, 1)),
+        "per_class_kws12": per_class,
+        "min_kws12_precision": float(min_precision),
+        "min_kws12_recall": float(min_recall),
     }
+
+
+def compute_kws12_accuracy(preds: np.ndarray, targets: np.ndarray) -> float:
+    valid = targets != IGNORE_INDEX
+    if valid.sum() == 0:
+        return 0.0
+    preds_kws12 = _to_kws12_indices(preds[valid])
+    targets_kws12 = _to_kws12_indices(targets[valid])
+    return float((preds_kws12 == targets_kws12).mean())
+
+
+def compute_per_class_kws12(preds: np.ndarray, targets: np.ndarray) -> Dict[str, Dict[str, object]]:
+    valid = targets != IGNORE_INDEX
+    if valid.sum() == 0:
+        return compute_per_class_kws12_from_indices(
+            np.zeros((0,), dtype=np.int64),
+            np.zeros((0,), dtype=np.int64),
+        )
+
+    return compute_per_class_kws12_from_indices(
+        _to_kws12_indices(preds[valid]),
+        _to_kws12_indices(targets[valid]),
+    )
+
+
+def compute_kws12_breakdown(preds: np.ndarray, targets: np.ndarray) -> Dict[str, object]:
+    valid = targets != IGNORE_INDEX
+    if valid.sum() == 0:
+        return compute_kws12_breakdown_from_indices(
+            np.zeros((0,), dtype=np.int64),
+            np.zeros((0,), dtype=np.int64),
+        )
+    return compute_kws12_breakdown_from_indices(
+        _to_kws12_indices(preds[valid]),
+        _to_kws12_indices(targets[valid]),
+    )
 
 
 def compute_keyword_breakdown(preds: np.ndarray, targets: np.ndarray) -> Dict[str, object]:

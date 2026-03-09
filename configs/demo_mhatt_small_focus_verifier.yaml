@@ -1,0 +1,75 @@
+seed: 1337
+run_name: demo_mhatt_small_focus_verifier
+
+model:
+  name: kws12_verifier
+  conv_channels: 40
+  num_blocks: 4
+  attn_dim: 128
+  num_heads: 4
+  dropout: 0.15
+
+features:
+  sample_rate: 16000
+  audio_seconds: 1.0
+  n_fft: 1024
+  hop_length: 128
+  n_mels: 80
+  f_min: 20.0
+  f_max: 7600.0
+
+data:
+  manifests_dir: data/processed/manifests
+  local:
+    speech_commands_split: data/local/speech_commands_split
+    silence_ratio: 0.10
+    limit_per_class: 640
+    xiaomi_mirror: data/legacy/KWS/XiaoMi/speech_commands
+  external:
+    hi_mia:
+      enabled: true
+      root: data/external/hi_mia
+      limit_per_split: null
+      require_full: true
+  synthetic:
+    hard_negatives:
+      enabled: true
+      output_dir: data/synthetic/hard_negatives
+      selection_report: reports/demo_model_ranking_stable.json
+      voices: [Samantha, Alex, Daniel, Karen, Tessa, Moira]
+      rates: [140, 175, 210]
+      train_ratio: 0.8
+      overwrite: false
+
+training:
+  device: mps
+  output_dir: outputs
+  epochs: 12
+  batch_size: 128
+  num_workers: 0
+  teacher:
+    enabled: true
+    model_id: microsoft/wavlm-base-plus
+    cache_dir: cache/wavlm_verifier_teacher
+    dropout: 0.1
+  verifier:
+    labels: ["silence", "unknown", "yes", "no", "up", "down", "left", "right", "on", "off", "stop", "go", "reject"]
+    reject_label: "reject"
+    margin: 0.15
+    reject_weight: 1.75
+    label_smoothing: 0.02
+    min_accept_prob: 0.65
+    min_margin: 0.08
+    calibration_target_precision: 0.95
+    calibration_fit_split: valid
+    reject_difficulty_buckets: ["hard_negative"]
+    reject_path_substrings: ["hard_negative", "hard_negatives"]
+    source_checkpoint: outputs/demo_mhatt_small_focus_v3/best_kws12.pt
+  loss_weights:
+    ce: 1.0
+    margin: 0.25
+    distill_logits: 0.2
+    distill_embed: 0.05
+  optimizer: adamw
+  lr: 0.0008
+  weight_decay: 0.0001

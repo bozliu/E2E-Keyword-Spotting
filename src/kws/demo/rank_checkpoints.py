@@ -1,4 +1,4 @@
-"""Rank checkpoints for demo selection (accuracy/latency balance)."""
+"""Rank checkpoints for demo selection."""
 
 from __future__ import annotations
 
@@ -12,16 +12,21 @@ from typing import Dict, Iterable, List, Tuple
 import numpy as np
 import torch
 
-from kws.constants import KWS12_LABELS, command31_to_kws12
+from kws.constants import COMMAND31_LABELS, KWS12_LABELS, command31_to_kws12
 from kws.data.audio import MelFrontend
 from kws.models import create_model
 from kws.train.engine import pick_device
 from kws.utils.keyword_focus import compute_keyword_balance, compute_per_keyword_from_confusion
 
 
-DEFAULT_REPORT_PATH = Path("reports/demo_model_ranking.json")
+DEFAULT_FAST_REPORT_PATH = Path("reports/demo_model_ranking.json")
+DEFAULT_BALANCED_REPORT_PATH = Path("reports/demo_model_ranking_balanced.json")
+DEFAULT_STABLE_REPORT_PATH = Path("reports/demo_model_ranking_stable.json")
+DEFAULT_REPORT_PATH = DEFAULT_FAST_REPORT_PATH
 DEFAULT_LATENCY_TARGET_MS = 100.0
 DEFAULT_LATENCY_FALLBACK_MS = 130.0
+DEFAULT_SELECTION_PROFILE = "stable"
+SELECTION_PROFILES = ("stable", "balanced", "fast")
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,8 @@ class Candidate:
     checkpoint: Path
     runtime_device: str
     kws12_acc: float
+    min_kws12_precision: float
+    min_kws12_recall: float
     kws12_target_recall: float
     kws12_unknown_to_target_rate: float
     focus_keyword_recall_mean: float
@@ -60,6 +67,8 @@ def _best_valid_metrics(metrics_path: Path) -> Dict[str, float]:
     if not metrics_path.exists():
         return {
             "kws12_acc": -1.0,
+            "min_kws12_precision": 0.0,
+            "min_kws12_recall": 0.0,
             "wake_frr_at_1fa_per_hour": 1.0,
             "kws12_target_recall": 0.0,
             "kws12_unknown_to_target_rate": 1.0,
@@ -78,6 +87,8 @@ def _best_valid_metrics(metrics_path: Path) -> Dict[str, float]:
             valid = row.get("valid_metrics", {})
             candidate = {
                 "kws12_acc": float(valid.get("kws12_acc", -1.0)),
+                "min_kws12_precision": float(valid.get("min_kws12_precision", valid.get("kws12_target_precision", valid.get("kws12_acc", 0.0)))),
+                "min_kws12_recall": float(valid.get("min_kws12_recall", valid.get("kws12_target_recall", 0.0))),
                 "wake_frr_at_1fa_per_hour": float(valid.get("wake_frr_at_1fa_per_hour", 1.0)),
                 "kws12_target_recall": float(valid.get("kws12_target_recall", 0.0)),
                 "kws12_unknown_to_target_rate": float(valid.get("kws12_unknown_to_target_rate", 1.0)),
@@ -91,6 +102,8 @@ def _best_valid_metrics(metrics_path: Path) -> Dict[str, float]:
     if best is None:
         best = {
             "kws12_acc": -1.0,
+            "min_kws12_precision": 0.0,
+            "min_kws12_recall": 0.0,
             "wake_frr_at_1fa_per_hour": 1.0,
             "kws12_target_recall": 0.0,
             "kws12_unknown_to_target_rate": 1.0,
@@ -100,6 +113,85 @@ def _best_valid_metrics(metrics_path: Path) -> Dict[str, float]:
             "keyword_balance_gap": 1.0,
         }
     return best
+
+
+def _report_path_for_profile(selection_profile: str) -> Path:
+    selection_profile = str(selection_profile).lower().strip()
+    if selection_profile == "fast":
+        return DEFAULT_FAST_REPORT_PATH
+    if selection_profile == "balanced":
+        return DEFAULT_BALANCED_REPORT_PATH
+    return DEFAULT_STABLE_REPORT_PATH
+
+
+def _normalize_selection_profile(selection_profile: str) -> str:
+    profile = str(selection_profile).lower().strip()
+    if profile not in SELECTION_PROFILES:
+        raise ValueError(f"Unknown selection profile: {selection_profile}")
+    return profile
+
+
+def _per_class_kws12_from_command_confusion(confusion: object) -> Dict[str, Dict[str, float]]:
+    cm31 = np.asarray(confusion, dtype=np.int64)
+    if cm31.ndim != 2 or cm31.shape[0] < len(COMMAND31_LABELS) or cm31.shape[1] < len(COMMAND31_LABELS):
+        return {}
+    size = len(KWS12_LABELS)
+    cm12 = np.zeros((size, size), dtype=np.int64)
+    for src_idx, src_label in enumerate(COMMAND31_LABELS):
+        src_kws = int(command31_to_kws12(src_label))
+        for dst_idx, dst_label in enumerate(COMMAND31_LABELS):
+            dst_kws = int(command31_to_kws12(dst_label))
+            cm12[src_kws, dst_kws] += int(cm31[src_idx, dst_idx])
+
+    out: Dict[str, Dict[str, float]] = {}
+    for idx, label in enumerate(KWS12_LABELS):
+        row = cm12[idx]
+        col = cm12[:, idx]
+        support = int(row.sum())
+        predicted = int(col.sum())
+        tp = int(cm12[idx, idx])
+        precision = float(tp / max(predicted, 1))
+        recall = float(tp / max(support, 1))
+        denom = precision + recall
+        f1 = float((2.0 * precision * recall) / denom) if denom > 0.0 else 0.0
+        confusions = [
+            {"label": KWS12_LABELS[j], "count": int(count)}
+            for j, count in enumerate(row.tolist())
+            if j != idx and int(count) > 0
+        ]
+        confusions.sort(key=lambda item: (-item["count"], item["label"]))
+        out[label] = {
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": support,
+            "predicted": predicted,
+            "top_confusions": confusions[:3],
+        }
+    return out
+
+
+def _extract_per_class_kws12(payload: Dict[str, object], metrics: Dict[str, object]) -> Dict[str, Dict[str, float]]:
+    per_class = payload.get("per_class_kws12") or metrics.get("per_class_kws12")
+    if isinstance(per_class, dict) and per_class:
+        return {
+            str(label): {
+                "precision": float(stats.get("precision", 0.0)),
+                "recall": float(stats.get("recall", 0.0)),
+                "f1": float(stats.get("f1", 0.0)),
+                "support": int(stats.get("support", 0)),
+                "predicted": int(stats.get("predicted", 0)),
+                "top_confusions": list(stats.get("top_confusions", [])),
+            }
+            for label, stats in per_class.items()
+            if isinstance(stats, dict)
+        }
+    return _per_class_kws12_from_command_confusion(metrics.get("command_confusion", []))
+
+
+def _min_per_class_metric(per_class: Dict[str, Dict[str, float]], key: str) -> float:
+    values = [float(stats.get(key, 0.0)) for label, stats in per_class.items() if label in KWS12_LABELS]
+    return float(min(values)) if values else 0.0
 
 
 def _report_metrics_for_run(run: str, ckpt_path: Path) -> Dict[str, float]:
@@ -113,6 +205,7 @@ def _report_metrics_for_run(run: str, ckpt_path: Path) -> Dict[str, float]:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             metrics = payload.get("metrics", {})
+            per_class = _extract_per_class_kws12(payload, metrics)
             keyword_focus = payload.get("keyword_focus", {}) if isinstance(payload.get("keyword_focus", {}), dict) else {}
             per_keyword = payload.get("per_keyword") or metrics.get("per_keyword") or {}
             if not per_keyword:
@@ -120,6 +213,24 @@ def _report_metrics_for_run(run: str, ckpt_path: Path) -> Dict[str, float]:
             keyword_balance = compute_keyword_balance(per_keyword)
             return {
                 "kws12_acc": float(metrics.get("kws12_acc", -1.0)),
+                "min_kws12_precision": float(
+                    payload.get(
+                        "min_kws12_precision",
+                        metrics.get(
+                            "min_kws12_precision",
+                            metrics.get("kws12_target_precision", _min_per_class_metric(per_class, "precision")),
+                        ),
+                    )
+                ),
+                "min_kws12_recall": float(
+                    payload.get(
+                        "min_kws12_recall",
+                        metrics.get(
+                            "min_kws12_recall",
+                            metrics.get("kws12_target_recall", _min_per_class_metric(per_class, "recall")),
+                        ),
+                    )
+                ),
                 "wake_frr_at_1fa_per_hour": float(metrics.get("wake_frr_at_1fa_per_hour", 1.0)),
                 "kws12_target_recall": float(metrics.get("kws12_target_recall", 0.0)),
                 "kws12_unknown_to_target_rate": float(metrics.get("kws12_unknown_to_target_rate", 1.0)),
@@ -230,7 +341,9 @@ def rank_checkpoints(
     benchmark_iters: int = 30,
     latency_target_ms: float = DEFAULT_LATENCY_TARGET_MS,
     latency_fallback_ms: float = DEFAULT_LATENCY_FALLBACK_MS,
+    selection_profile: str = DEFAULT_SELECTION_PROFILE,
 ) -> List[Candidate]:
+    selection_profile = _normalize_selection_profile(selection_profile)
     outputs_root = outputs_root.expanduser().resolve()
     if isinstance(device, str):
         requested = str(device).lower().strip()
@@ -260,6 +373,18 @@ def rank_checkpoints(
         if needs_fallback and fallback:
             valid = {
                 "kws12_acc": float(valid.get("kws12_acc", fallback.get("kws12_acc", -1.0))),
+                "min_kws12_precision": float(
+                    valid.get(
+                        "min_kws12_precision",
+                        fallback.get("min_kws12_precision", valid.get("kws12_target_precision", valid.get("kws12_acc", 0.0))),
+                    )
+                ),
+                "min_kws12_recall": float(
+                    valid.get(
+                        "min_kws12_recall",
+                        fallback.get("min_kws12_recall", valid.get("kws12_target_recall", 0.0)),
+                    )
+                ),
                 "wake_frr_at_1fa_per_hour": float(
                     valid.get("wake_frr_at_1fa_per_hour", fallback.get("wake_frr_at_1fa_per_hour", 1.0))
                 ),
@@ -306,6 +431,8 @@ def rank_checkpoints(
             else:
                 latency_bucket = 2
             target_recall = float(valid.get("kws12_target_recall", 0.0))
+            min_precision = float(valid.get("min_kws12_precision", 0.0))
+            min_recall = float(valid.get("min_kws12_recall", 0.0))
             unknown_to_target_rate = float(valid.get("kws12_unknown_to_target_rate", 1.0))
             focus_recall = float(valid.get("focus_keyword_recall_mean", 0.0))
             focus_conf_rate = float(valid.get("focus_pair_confusion_rate", 1.0))
@@ -332,6 +459,8 @@ def rank_checkpoints(
                     checkpoint=ckpt_path.resolve(),
                     runtime_device=runtime_device.type,
                     kws12_acc=acc,
+                    min_kws12_precision=min_precision,
+                    min_kws12_recall=min_recall,
                     kws12_target_recall=target_recall,
                     kws12_unknown_to_target_rate=unknown_to_target_rate,
                     focus_keyword_recall_mean=focus_recall,
@@ -347,19 +476,48 @@ def rank_checkpoints(
                 )
             )
 
-    ranked.sort(
-        key=lambda c: (
-            c.latency_bucket,
-            int(not c.selection_passed_fp_guardrail),
-            -c.focus_keyword_recall_mean,
-            c.focus_pair_confusion_rate,
-            -c.kws12_target_recall,
-            -c.kws12_acc,
-            c.latency_ms,
-            c.wake_frr_at_1fa_per_hour,
-            c.run,
+    if selection_profile == "fast":
+        ranked.sort(
+            key=lambda c: (
+                c.latency_bucket,
+                int(not c.selection_passed_fp_guardrail),
+                -c.focus_keyword_recall_mean,
+                c.focus_pair_confusion_rate,
+                -c.kws12_target_recall,
+                -c.kws12_acc,
+                c.latency_ms,
+                c.wake_frr_at_1fa_per_hour,
+                c.run,
+            )
         )
-    )
+    elif selection_profile == "balanced":
+        ranked.sort(
+            key=lambda c: (
+                c.latency_bucket,
+                int(not c.selection_passed_fp_guardrail),
+                -c.min_kws12_precision,
+                -c.focus_keyword_recall_mean,
+                c.focus_pair_confusion_rate,
+                -c.min_kws12_recall,
+                c.kws12_unknown_to_target_rate,
+                -c.kws12_acc,
+                c.latency_ms,
+                c.run,
+            )
+        )
+    else:
+        ranked.sort(
+            key=lambda c: (
+                c.latency_bucket,
+                int(not c.selection_passed_fp_guardrail),
+                -c.min_kws12_precision,
+                -c.min_kws12_recall,
+                c.kws12_unknown_to_target_rate,
+                -c.kws12_acc,
+                c.latency_ms,
+                c.run,
+            )
+        )
     return ranked
 
 
@@ -369,14 +527,20 @@ def select_best_checkpoint(
     device: str = "auto",
     metric_balance: Tuple[float, float] = (0.7, 0.3),
     benchmark_iters: int = 30,
-    report_path: str | Path = DEFAULT_REPORT_PATH,
+    report_path: str | Path | None = None,
     use_cache: bool = True,
     rebuild: bool = False,
+    selection_profile: str = DEFAULT_SELECTION_PROFILE,
 ) -> Tuple[Path, str]:
+    selection_profile = _normalize_selection_profile(selection_profile)
+    if report_path is None or str(report_path).strip() == "":
+        report_path = _report_path_for_profile(selection_profile)
     report_path = Path(report_path).expanduser().resolve()
     if use_cache and not rebuild and report_path.exists():
         try:
             payload = json.loads(report_path.read_text(encoding="utf-8"))
+            if str(payload.get("selection_profile", selection_profile)).lower().strip() != selection_profile:
+                raise ValueError("selection profile mismatch")
             chosen = Path(payload.get("chosen", {}).get("checkpoint", "")).expanduser()
             runtime_device = str(payload.get("chosen", {}).get("runtime_device", "")).strip()
             if chosen.exists() and runtime_device:
@@ -389,6 +553,7 @@ def select_best_checkpoint(
         device=device,
         metric_balance=metric_balance,
         benchmark_iters=int(benchmark_iters),
+        selection_profile=selection_profile,
     )
     if not ranked:
         raise FileNotFoundError(f"No checkpoints found under {Path(outputs_root).resolve()}")
@@ -400,6 +565,7 @@ def select_best_checkpoint(
     )
     payload = {
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "selection_profile": selection_profile,
         "metric_balance": {"accuracy": float(metric_balance[0]), "latency": float(metric_balance[1])},
         "requested_device": str(device),
         "latency_target_ms": DEFAULT_LATENCY_TARGET_MS,
@@ -411,6 +577,8 @@ def select_best_checkpoint(
                 "checkpoint": str(c.checkpoint),
                 "runtime_device": c.runtime_device,
                 "kws12_acc": c.kws12_acc,
+                "min_kws12_precision": c.min_kws12_precision,
+                "min_kws12_recall": c.min_kws12_recall,
                 "kws12_target_recall": c.kws12_target_recall,
                 "kws12_unknown_to_target_rate": c.kws12_unknown_to_target_rate,
                 "focus_keyword_recall_mean": c.focus_keyword_recall_mean,
@@ -431,6 +599,8 @@ def select_best_checkpoint(
             "checkpoint": str(chosen.checkpoint),
             "runtime_device": chosen.runtime_device,
             "kws12_acc": chosen.kws12_acc,
+            "min_kws12_precision": chosen.min_kws12_precision,
+            "min_kws12_recall": chosen.min_kws12_recall,
             "kws12_target_recall": chosen.kws12_target_recall,
             "kws12_unknown_to_target_rate": chosen.kws12_unknown_to_target_rate,
             "focus_keyword_recall_mean": chosen.focus_keyword_recall_mean,
@@ -461,9 +631,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Rank checkpoints for demo selection")
     parser.add_argument("--root", type=str, default="outputs", help="Outputs root directory")
     parser.add_argument("--device", type=str, default="auto", help="auto|mps|cpu|cuda")
+    parser.add_argument("--selection-profile", type=str, default=DEFAULT_SELECTION_PROFILE, choices=list(SELECTION_PROFILES))
     parser.add_argument("--metric-balance", type=str, default="0.7,0.3", help="accuracy,latency weights")
     parser.add_argument("--benchmark-iters", type=int, default=30)
-    parser.add_argument("--output", type=str, default=str(DEFAULT_REPORT_PATH))
+    parser.add_argument("--output", type=str, default="")
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--rebuild", action="store_true")
     return parser.parse_args()
@@ -477,11 +648,13 @@ def main() -> None:
         device=args.device,
         metric_balance=metric_balance,
         benchmark_iters=int(args.benchmark_iters),
-        report_path=args.output,
+        report_path=args.output or None,
         use_cache=not args.no_cache,
         rebuild=bool(args.rebuild),
+        selection_profile=args.selection_profile,
     )
-    payload = json.loads(Path(args.output).expanduser().resolve().read_text(encoding="utf-8"))
+    report_path = Path(args.output).expanduser().resolve() if args.output else _report_path_for_profile(args.selection_profile).expanduser().resolve()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
     print(json.dumps(payload, indent=2))
     print(f"Chosen checkpoint: {chosen} on {runtime_device}")
 

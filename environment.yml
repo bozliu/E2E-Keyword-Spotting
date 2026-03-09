@@ -5,8 +5,8 @@ channels:
 dependencies:
   - python=3.12
   - pip
-  - pytorch>=2.5
-  - torchaudio>=2.5
+  - pytorch=2.6.*
+  - torchaudio=2.6.*
   - numpy
   - pandas
   - scikit-learn
@@ -15,8 +15,8 @@ dependencies:
   - tqdm
   - matplotlib
   - tensorboard
-  - huggingface_hub
+  - huggingface_hub=0.36.*
   - pip:
       - mambapy>=1.2.0
       - sounddevice>=0.5
-      - transformers>=4.51
+      - transformers==4.57.6

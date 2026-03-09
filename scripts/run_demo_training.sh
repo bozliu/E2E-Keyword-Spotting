@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
-ENV_NAME="${KWS_ENV_NAME:-dl}"
 
 configs=("$@")
 if [ "${#configs[@]}" -eq 0 ]; then
@@ -22,11 +21,11 @@ for config in "${configs[@]}"; do
   analysis_path="reports/${run_name}_analysis.json"
 
   echo "==> Training ${config}"
-  conda run --no-capture-output -n "${ENV_NAME}" python -m kws.train --config "${config}"
+  conda run --no-capture-output -n dl python -m kws.train --config "${config}"
 
   if [ -f "${checkpoint_path}" ]; then
     echo "==> Analyzing ${checkpoint_path}"
-    conda run --no-capture-output -n "${ENV_NAME}" \
+    conda run --no-capture-output -n dl \
       python -m kws.demo.analyze_checkpoint \
       --checkpoint "${checkpoint_path}" \
       --split test \
@@ -37,4 +36,4 @@ for config in "${configs[@]}"; do
 done
 
 echo "==> Refreshing demo ranking"
-conda run --no-capture-output -n "${ENV_NAME}" python scripts/select_demo_checkpoint.py
+conda run --no-capture-output -n dl python scripts/select_demo_checkpoint.py

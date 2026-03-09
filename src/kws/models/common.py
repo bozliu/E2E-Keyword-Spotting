@@ -12,3 +12,9 @@ class DualTaskOutput:
     command_logits: torch.Tensor
     wake_logits: torch.Tensor
     embedding: torch.Tensor
+
+
+@dataclass
+class VerifierOutput:
+    logits: torch.Tensor
+    embedding: torch.Tensor
