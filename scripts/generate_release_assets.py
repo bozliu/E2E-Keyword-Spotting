@@ -225,8 +225,10 @@ def _build_sota_rows(v2: dict[str, Any], v3: dict[str, Any]) -> list[dict[str, A
 def _realtime_status_payload() -> dict[str, Any]:
     valid, valid_name = _optional_json("realtime_accuracy_first_valid.json", "realtime_accuracy_first_valid_smoke.json")
     test, test_name = _optional_json("realtime_accuracy_first_test.json", "realtime_accuracy_first_test_smoke.json")
-    if valid and test and valid_name.endswith(".json") and test_name.endswith(".json") and not valid_name.endswith("_smoke.json") and not test_name.endswith("_smoke.json"):
-        status = "full"
+    valid_is_full = bool(valid and valid_name.endswith(".json") and not valid_name.endswith("_smoke.json"))
+    test_is_full = bool(test and test_name.endswith(".json") and not test_name.endswith("_smoke.json"))
+    if valid_is_full and test_is_full:
+        status = "full_passed" if bool(valid.get("passed")) and bool(test.get("passed")) else "full_failed"
     elif valid or test:
         status = "smoke_only"
     else:
@@ -353,10 +355,14 @@ def build_assets() -> dict[str, Any]:
         "realtime_status": realtime,
         "release_claim": (
             "full_realtime_validated"
-            if realtime["status"] == "full"
+            if realtime["status"] == "full_passed"
             and bool(realtime["valid"].get("passed"))
             and bool(realtime["test"].get("passed"))
-            else "offline_validated_realtime_smoke_only"
+            else (
+                "offline_validated_realtime_full_failed"
+                if realtime["status"] == "full_failed"
+                else "offline_validated_realtime_smoke_only"
+            )
         ),
     }
 

@@ -1,239 +1,441 @@
 {
-  "status": "smoke_only",
-  "valid_source": "realtime_accuracy_first_valid_smoke.json",
-  "test_source": "realtime_accuracy_first_test_smoke.json",
+  "status": "full_failed",
+  "valid_source": "realtime_accuracy_first_valid.json",
+  "test_source": "realtime_accuracy_first_test.json",
   "valid": {
     "split": "valid",
-    "num_eval_samples": 31,
+    "num_eval_samples": 7477,
     "runtime_label_backend": "external-ensemble",
     "external_kws_model_id": "ensemble/ast-superb-kws12",
     "external_kws_device": "mps",
     "per_class_kws12": {
       "silence": {
-        "precision": 1.0,
+        "precision": 0.9883551673944687,
         "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
+        "f1": 0.9941434846266471,
+        "support": 679,
+        "predicted": 687,
         "top_confusions": []
       },
       "unknown": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 20,
-        "predicted": 20,
-        "top_confusions": []
+        "precision": 0.981564641928622,
+        "recall": 0.9838900734423123,
+        "f1": 0.9827259820160908,
+        "support": 4221,
+        "predicted": 4231,
+        "top_confusions": [
+          {
+            "label": "off",
+            "count": 36
+          },
+          {
+            "label": "on",
+            "count": 12
+          },
+          {
+            "label": "go",
+            "count": 11
+          }
+        ]
       },
       "yes": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9693486590038314,
+        "f1": 0.9844357976653696,
+        "support": 261,
+        "predicted": 253,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 6
+          },
+          {
+            "label": "no",
+            "count": 2
+          }
+        ]
       },
       "no": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9813432835820896,
+        "recall": 0.9740740740740741,
+        "f1": 0.9776951672862454,
+        "support": 270,
+        "predicted": 268,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 4
+          },
+          {
+            "label": "go",
+            "count": 3
+          }
+        ]
       },
       "up": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9874476987447699,
+        "recall": 0.9076923076923077,
+        "f1": 0.9458917835671343,
+        "support": 260,
+        "predicted": 239,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 20
+          },
+          {
+            "label": "off",
+            "count": 3
+          },
+          {
+            "label": "silence",
+            "count": 1
+          }
+        ]
       },
       "down": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9772727272727273,
+        "f1": 0.9885057471264368,
+        "support": 264,
+        "predicted": 258,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 5
+          },
+          {
+            "label": "no",
+            "count": 1
+          }
+        ]
       },
       "left": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9838056680161943,
+        "f1": 0.9918367346938776,
+        "support": 247,
+        "predicted": 243,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 3
+          },
+          {
+            "label": "no",
+            "count": 1
+          }
+        ]
       },
       "right": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.984251968503937,
+        "recall": 0.9765625,
+        "f1": 0.9803921568627452,
+        "support": 256,
+        "predicted": 254,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 6
+          }
+        ]
       },
       "on": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.95,
+        "recall": 0.9610894941634242,
+        "f1": 0.9555125725338491,
+        "support": 257,
+        "predicted": 260,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 7
+          },
+          {
+            "label": "off",
+            "count": 3
+          }
+        ]
       },
       "off": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.8536585365853658,
+        "recall": 0.95703125,
+        "f1": 0.9023941068139965,
+        "support": 256,
+        "predicted": 287,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 7
+          },
+          {
+            "label": "up",
+            "count": 3
+          },
+          {
+            "label": "on",
+            "count": 1
+          }
+        ]
       },
       "stop": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.99581589958159,
+        "recall": 0.967479674796748,
+        "f1": 0.9814432989690722,
+        "support": 246,
+        "predicted": 239,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 8
+          }
+        ]
       },
       "go": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9457364341085271,
+        "recall": 0.9384615384615385,
+        "f1": 0.942084942084942,
+        "support": 260,
+        "predicted": 258,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 12
+          },
+          {
+            "label": "silence",
+            "count": 3
+          },
+          {
+            "label": "no",
+            "count": 1
+          }
+        ]
       }
     },
-    "min_kws12_precision": 1.0,
-    "min_kws12_recall": 1.0,
-    "unknown_to_target_rate": 0.0,
-    "no_match_rate": 0.6774193548387096,
-    "avg_match_latency_ms": 421.0000000000015,
-    "p95_match_latency_ms": 577.5000000000013,
+    "min_kws12_precision": 0.8536585365853658,
+    "min_kws12_recall": 0.9076923076923077,
+    "unknown_to_target_rate": 0.015162283819000238,
+    "no_match_rate": 0.65775043466631,
+    "avg_match_latency_ms": 672.6885505689686,
+    "p95_match_latency_ms": 1180.0000000000002,
     "goal": {
       "min_kws12_precision": 0.95,
       "min_kws12_recall": 0.95,
       "unknown_to_target_rate_max": 0.02
     },
-    "passed": true
+    "passed": false
   },
   "test": {
     "split": "test",
-    "num_eval_samples": 31,
+    "num_eval_samples": 7518,
     "runtime_label_backend": "external-ensemble",
     "external_kws_model_id": "ensemble/ast-superb-kws12",
     "external_kws_device": "mps",
     "per_class_kws12": {
       "silence": {
-        "precision": 1.0,
+        "precision": 0.9927325581395349,
         "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
+        "f1": 0.9963530269876003,
+        "support": 683,
+        "predicted": 688,
         "top_confusions": []
       },
       "unknown": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 20,
-        "predicted": 20,
-        "top_confusions": []
+        "precision": 0.9810924369747899,
+        "recall": 0.9847703842549204,
+        "f1": 0.9829279700654817,
+        "support": 4268,
+        "predicted": 4284,
+        "top_confusions": [
+          {
+            "label": "off",
+            "count": 31
+          },
+          {
+            "label": "on",
+            "count": 14
+          },
+          {
+            "label": "go",
+            "count": 12
+          }
+        ]
       },
       "yes": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9609375,
+        "f1": 0.9800796812749004,
+        "support": 256,
+        "predicted": 246,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 8
+          },
+          {
+            "label": "off",
+            "count": 2
+          }
+        ]
       },
       "no": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.995850622406639,
+        "recall": 0.9523809523809523,
+        "f1": 0.973630831643002,
+        "support": 252,
+        "predicted": 241,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 9
+          },
+          {
+            "label": "off",
+            "count": 2
+          },
+          {
+            "label": "on",
+            "count": 1
+          }
+        ]
       },
       "up": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9960629921259843,
+        "recall": 0.9301470588235294,
+        "f1": 0.9619771863117871,
+        "support": 272,
+        "predicted": 254,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 15
+          },
+          {
+            "label": "off",
+            "count": 4
+          }
+        ]
       },
       "down": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.991701244813278,
+        "recall": 0.9446640316205533,
+        "f1": 0.9676113360323887,
+        "support": 253,
+        "predicted": 241,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 11
+          },
+          {
+            "label": "go",
+            "count": 1
+          },
+          {
+            "label": "no",
+            "count": 1
+          }
+        ]
       },
       "left": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9924242424242424,
+        "recall": 0.9812734082397003,
+        "f1": 0.9868173258003766,
+        "support": 267,
+        "predicted": 264,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 5
+          }
+        ]
       },
       "right": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9575289575289575,
+        "f1": 0.9783037475345168,
+        "support": 259,
+        "predicted": 248,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 11
+          }
+        ]
       },
       "on": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9372549019607843,
+        "recall": 0.9715447154471545,
+        "f1": 0.9540918163672656,
+        "support": 246,
+        "predicted": 255,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 7
+          }
+        ]
       },
       "off": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.8668941979522184,
+        "recall": 0.9694656488549618,
+        "f1": 0.9153153153153154,
+        "support": 262,
+        "predicted": 293,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 6
+          },
+          {
+            "label": "left",
+            "count": 1
+          },
+          {
+            "label": "on",
+            "count": 1
+          }
+        ]
       },
       "stop": {
         "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "recall": 0.9879518072289156,
+        "f1": 0.993939393939394,
+        "support": 249,
+        "predicted": 246,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 3
+          }
+        ]
       },
       "go": {
-        "precision": 1.0,
-        "recall": 1.0,
-        "f1": 1.0,
-        "support": 1,
-        "predicted": 1,
-        "top_confusions": []
+        "precision": 0.9496124031007752,
+        "recall": 0.9760956175298805,
+        "f1": 0.962671905697446,
+        "support": 251,
+        "predicted": 258,
+        "top_confusions": [
+          {
+            "label": "unknown",
+            "count": 6
+          }
+        ]
       }
     },
-    "min_kws12_precision": 1.0,
-    "min_kws12_recall": 1.0,
-    "unknown_to_target_rate": 0.0,
-    "no_match_rate": 0.6774193548387096,
-    "avg_match_latency_ms": 467.00000000000165,
-    "p95_match_latency_ms": 965.0000000000014,
+    "min_kws12_precision": 0.8668941979522184,
+    "min_kws12_recall": 0.9301470588235294,
+    "unknown_to_target_rate": 0.01429240862230553,
+    "no_match_rate": 0.6613461026868848,
+    "avg_match_latency_ms": 674.018067856614,
+    "p95_match_latency_ms": 1230.0,
     "goal": {
       "min_kws12_precision": 0.95,
       "min_kws12_recall": 0.95,
       "unknown_to_target_rate_max": 0.02
     },
-    "passed": true
+    "passed": false
   }
 }

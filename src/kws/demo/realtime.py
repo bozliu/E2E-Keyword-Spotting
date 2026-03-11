@@ -17,18 +17,48 @@ import numpy as np
 import torch
 import torchaudio.transforms as ta_transforms
 
-from kws.constants import CLIP_SECONDS, CLIP_SAMPLES, COMMAND31_LABELS, KWS12_LABELS, TARGET_KEYWORDS_10, command31_to_kws12
+from kws.constants import CLIP_SECONDS, CLIP_SAMPLES, COMMAND31_LABELS, KWS12_LABELS, TARGET_KEYWORDS_10, UNKNOWN_LABEL, command31_to_kws12
 from kws.data.audio import MelFrontend, pad_or_trim
 from kws.demo.rank_checkpoints import benchmark_latency_ms, select_best_checkpoint
+from kws.demo.segment_decoder import (
+    LoadedSegmentDecoder,
+    SEGMENT_DECODER_INDEX_TO_LABEL,
+    SEGMENT_DECODER_LABELS,
+    SEGMENT_TARGET_LABELS,
+    SegmentFeatureStats,
+    load_segment_decoder_artifact,
+    predict_segment_decoder,
+)
+from kws.demo.realtime_specialist import (
+    HARD_WORD_SPECIALIST_INDEX_TO_LABEL,
+    HARD_WORD_SPECIALIST_LABELS,
+    HARD_WORD_SPECIALIST_LABEL_TO_INDEX,
+    HARD_WORD_SPECIALIST_TARGETS,
+    LoadedRealtimeSpecialist,
+    load_realtime_specialist_artifact,
+    load_realtime_specialist_calibration,
+    predict_realtime_specialist,
+)
 from kws.demo.user_profile import DEFAULT_USER_PROFILE_PATH, PassiveKeywordProfile
 from kws.demo.verifier_runtime import LoadedVerifier, load_runtime_verifier, verify_keyword
 from kws.demo.visuals import TEXT, apply_theme, build_wheel, create_hud, resolve_active_index, update_wheel
 from kws.eval.fusion import select_verifier_candidate
-from kws.external import ENSEMBLE_AST_SUPERB_MODEL_ID, predict_kws12_from_waveforms
+from kws.external import (
+    ENSEMBLE_AST_SUPERB_MODEL_ID,
+    default_external_ensemble_calibration,
+    load_external_ensemble_calibration,
+    predict_ensemble_ast_superb_from_waveforms,
+    predict_kws12_from_waveforms,
+)
 from kws.demo.web_runtime import resolve_runtime_decision as shared_resolve_runtime_decision
 from kws.models import create_model
 from kws.train.engine import pick_device
-from kws.utils.keyword_focus import DEFAULT_FOCUS_RUNTIME_OVERRIDES, DEFAULT_RUNTIME_CONFUSION_GROUPS, load_keyword_calibration
+from kws.utils.keyword_focus import (
+    DEFAULT_FOCUS_RUNTIME_OVERRIDES,
+    DEFAULT_RUNTIME_CONFUSION_GROUPS,
+    load_keyword_calibration,
+    resolve_external_force_open_conf_threshold,
+)
 
 try:
     import sounddevice as sd
@@ -45,9 +75,10 @@ MIC_CHECK = "MIC_CHECK"
 MIC_RUNTIME_ERROR = "RUNTIME_ERROR"
 DEFAULT_DEMO_LOCK_PATH = Path.home() / ".kws_demo" / "realtime.lock"
 DEFAULT_DEMO_PROFILE = "accuracy-first"
+REALTIME_TUNED_DEMO_PROFILE = "accuracy-first-realtime"
 DEFAULT_RUNTIME_LABEL_BACKEND = "external-ensemble"
 BASELINE_RUNTIME_LABEL_BACKEND = "detector"
-SUPPORTED_DEMO_PROFILES = ("accuracy-first", "cpu-baseline")
+SUPPORTED_DEMO_PROFILES = (DEFAULT_DEMO_PROFILE, REALTIME_TUNED_DEMO_PROFILE, "cpu-baseline")
 SUPPORTED_RUNTIME_LABEL_BACKENDS = (DEFAULT_RUNTIME_LABEL_BACKEND, BASELINE_RUNTIME_LABEL_BACKEND)
 
 
@@ -103,6 +134,16 @@ class LoadedRealtimeDemo:
     command31_labels: list[str]
     wheel: str
     keyword_calibration: Dict[str, object]
+    keyword_calibration_path: Path | None
+    external_ensemble_calibration: Dict[str, object]
+    external_ensemble_calibration_path: Path | None
+    segment_decoder: LoadedSegmentDecoder | None
+    segment_decoder_path: Path | None
+    segment_decoder_disabled: bool
+    realtime_specialist: LoadedRealtimeSpecialist | None
+    realtime_specialist_path: Path | None
+    realtime_specialist_calibration: Dict[str, object]
+    realtime_specialist_calibration_path: Path | None
     sample_rate: int
     clip_samples: int
     audio_seconds: float
@@ -349,6 +390,17 @@ class HighlightPreviewState:
         return None
 
 
+@dataclass
+class ActiveSegmentState:
+    stats: SegmentFeatureStats
+    started_at: float
+    last_signal_at: float
+    hard_peak_label: str | None = None
+    hard_peak_prob: float = 0.0
+    hard_peak_time: float = 0.0
+    hard_peak_waveform: np.ndarray | None = None
+
+
 class GateStateMachine:
     """Wake gate with fixed/adaptive thresholds and hysteresis."""
 
@@ -447,6 +499,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default="auto", help="Checkpoint path or 'auto'")
     parser.add_argument("--device", type=str, default="auto", help="auto|mps|cpu|cuda")
     parser.add_argument("--selection-profile", type=str, default="stable", choices=["stable", "balanced", "fast"])
+    parser.add_argument(
+        "--keyword-calibration-path",
+        type=str,
+        default="",
+        help="Optional keyword calibration override path. "
+        f"{REALTIME_TUNED_DEMO_PROFILE} requires a realtime calibration file.",
+    )
+    parser.add_argument(
+        "--external-ensemble-calibration-path",
+        type=str,
+        default="",
+        help="Optional external ensemble fusion calibration override path.",
+    )
     parser.add_argument("--wheel", type=str, default="kws12", choices=["command31", "kws12", "target10"])
     parser.add_argument(
         "--runtime-label-backend",
@@ -520,14 +585,18 @@ def resolve_realtime_profile(
         raise ValueError(f"Unsupported demo profile: {demo_profile}")
 
     detector_pref = str(detector_device_preference or "auto").strip().lower() or "auto"
-    if profile == DEFAULT_DEMO_PROFILE and detector_pref == "auto":
+    if profile in {DEFAULT_DEMO_PROFILE, REALTIME_TUNED_DEMO_PROFILE} and detector_pref == "auto":
         detector_pref = "mps"
     elif profile == "cpu-baseline" and detector_pref == "auto":
         detector_pref = "cpu"
 
     backend = str(runtime_label_backend or "").strip().lower()
     if not backend:
-        backend = DEFAULT_RUNTIME_LABEL_BACKEND if profile == DEFAULT_DEMO_PROFILE else BASELINE_RUNTIME_LABEL_BACKEND
+        backend = (
+            DEFAULT_RUNTIME_LABEL_BACKEND
+            if profile in {DEFAULT_DEMO_PROFILE, REALTIME_TUNED_DEMO_PROFILE}
+            else BASELINE_RUNTIME_LABEL_BACKEND
+        )
     if backend not in SUPPORTED_RUNTIME_LABEL_BACKENDS:
         raise ValueError(
             f"Unsupported runtime label backend: {runtime_label_backend}. "
@@ -623,12 +692,143 @@ def _resolve_realtime_checkpoint(
     return ckpt_path, ranked_runtime_device
 
 
+def _resolve_keyword_calibration(
+    *,
+    checkpoint_path: Path,
+    checkpoint_payload: Dict[str, object],
+    profile: ResolvedRealtimeProfile,
+    keyword_calibration_path: str = "",
+) -> tuple[Dict[str, object], Path | None]:
+    explicit = Path(keyword_calibration_path).expanduser().resolve() if str(keyword_calibration_path).strip() else None
+    if explicit is not None:
+        calibration = load_keyword_calibration(explicit)
+        if not calibration:
+            raise FileNotFoundError(f"Keyword calibration override was requested but not found or empty: {explicit}")
+        return calibration, explicit
+
+    if profile.demo_profile == REALTIME_TUNED_DEMO_PROFILE:
+        realtime_path = checkpoint_path.parent / "keyword_calibration_realtime.json"
+        calibration = load_keyword_calibration(realtime_path)
+        if not calibration:
+            raise FileNotFoundError(
+                f"{REALTIME_TUNED_DEMO_PROFILE} requires a realtime calibration file at {realtime_path}. "
+                "Run `python -m kws.demo.tune_realtime ...` first or pass --keyword-calibration-path."
+            )
+        return calibration, realtime_path
+
+    default_path = checkpoint_path.parent / "keyword_calibration.json"
+    calibration = load_keyword_calibration(default_path)
+    if not calibration and isinstance(checkpoint_payload.get("keyword_calibration"), dict):
+        calibration = dict(checkpoint_payload["keyword_calibration"])
+        return calibration, None
+    return calibration, default_path if calibration else None
+
+
+def _resolve_external_ensemble_calibration(
+    *,
+    checkpoint_path: Path,
+    profile: ResolvedRealtimeProfile,
+    external_ensemble_calibration_path: str = "",
+) -> tuple[Dict[str, object], Path | None]:
+    if profile.runtime_label_backend != DEFAULT_RUNTIME_LABEL_BACKEND:
+        return {}, None
+
+    explicit = (
+        Path(external_ensemble_calibration_path).expanduser().resolve()
+        if str(external_ensemble_calibration_path).strip()
+        else None
+    )
+    if explicit is not None:
+        calibration = load_external_ensemble_calibration(explicit)
+        if not calibration:
+            raise FileNotFoundError(
+                f"External ensemble calibration override was requested but not found or empty: {explicit}"
+            )
+        return calibration, explicit
+
+    if profile.demo_profile == REALTIME_TUNED_DEMO_PROFILE:
+        realtime_path = checkpoint_path.parent / "external_ensemble_realtime_calibration.json"
+        calibration = load_external_ensemble_calibration(realtime_path)
+        if not calibration:
+            raise FileNotFoundError(
+                f"{REALTIME_TUNED_DEMO_PROFILE} requires an external ensemble realtime calibration file at {realtime_path}. "
+                "Run `python -m kws.demo.tune_realtime ...` first."
+            )
+        return calibration, realtime_path
+
+    default_path = checkpoint_path.parent / "external_ensemble_calibration.json"
+    calibration = load_external_ensemble_calibration(default_path)
+    if calibration:
+        return calibration, default_path
+    return default_external_ensemble_calibration(mode="offline"), None
+
+
+def _resolve_segment_decoder(
+    *,
+    checkpoint_path: Path,
+    profile: ResolvedRealtimeProfile,
+    keyword_calibration: Dict[str, object],
+    runtime_device: torch.device,
+) -> tuple[LoadedSegmentDecoder | None, Path | None, bool]:
+    if profile.demo_profile != REALTIME_TUNED_DEMO_PROFILE:
+        return None, None, True
+
+    decoder_path = (checkpoint_path.parent / "segment_decoder_realtime.pt").resolve()
+    disabled_marker = keyword_calibration.get("segment_decoder_disabled", None)
+    has_marker = disabled_marker is not None
+    disabled = bool(disabled_marker) if has_marker else False
+    if has_marker and disabled:
+        return None, None, True
+    if decoder_path.exists():
+        return load_segment_decoder_artifact(decoder_path, device=runtime_device), decoder_path, False
+    raise FileNotFoundError(
+        f"{REALTIME_TUNED_DEMO_PROFILE} requires segment_decoder_realtime.pt at {decoder_path} "
+        "or keyword_calibration_realtime.json to include segment_decoder_disabled=true."
+    )
+
+
+def _resolve_realtime_specialist_calibration(
+    *,
+    checkpoint_path: Path,
+    profile: ResolvedRealtimeProfile,
+) -> tuple[Dict[str, object], Path | None]:
+    if profile.demo_profile != REALTIME_TUNED_DEMO_PROFILE:
+        return {}, None
+    calibration_path = (checkpoint_path.parent / "realtime_specialist_calibration.json").resolve()
+    calibration = load_realtime_specialist_calibration(calibration_path)
+    if not calibration:
+        raise FileNotFoundError(
+            f"{REALTIME_TUNED_DEMO_PROFILE} requires realtime_specialist_calibration.json at {calibration_path}. "
+            "Run `python -m kws.demo.train_realtime_specialist ...` or `python -m kws.demo.tune_realtime ...` first."
+        )
+    return calibration, calibration_path
+
+
+def _resolve_realtime_specialist(
+    *,
+    checkpoint_path: Path,
+    profile: ResolvedRealtimeProfile,
+    runtime_device: torch.device,
+) -> tuple[LoadedRealtimeSpecialist | None, Path | None]:
+    if profile.demo_profile != REALTIME_TUNED_DEMO_PROFILE:
+        return None, None
+    specialist_path = (checkpoint_path.parent / "realtime_specialist.pt").resolve()
+    if not specialist_path.exists():
+        raise FileNotFoundError(
+            f"{REALTIME_TUNED_DEMO_PROFILE} requires realtime_specialist.pt at {specialist_path}. "
+            "Run `python -m kws.demo.train_realtime_specialist ...` or `python -m kws.demo.tune_realtime ...` first."
+        )
+    return load_realtime_specialist_artifact(specialist_path, device=runtime_device), specialist_path
+
+
 def load_realtime_demo(
     *,
     checkpoint: str,
     demo_profile: str,
     detector_device_preference: str,
     selection_profile: str,
+    keyword_calibration_path: str = "",
+    external_ensemble_calibration_path: str = "",
     wheel: str,
     runtime_label_backend: str,
     external_kws_model: str,
@@ -683,9 +883,32 @@ def load_realtime_demo(
     cfg = checkpoint_payload["config"]
     features = cfg["features"]
     command31_labels = list(checkpoint_payload.get("label_set", COMMAND31_LABELS))
-    keyword_calibration = load_keyword_calibration(ckpt_path.parent / "keyword_calibration.json")
-    if not keyword_calibration and isinstance(checkpoint_payload.get("keyword_calibration"), dict):
-        keyword_calibration = dict(checkpoint_payload["keyword_calibration"])
+    keyword_calibration, resolved_calibration_path = _resolve_keyword_calibration(
+        checkpoint_path=ckpt_path,
+        checkpoint_payload=checkpoint_payload,
+        profile=resolved,
+        keyword_calibration_path=keyword_calibration_path,
+    )
+    external_ensemble_calibration, resolved_external_calibration_path = _resolve_external_ensemble_calibration(
+        checkpoint_path=ckpt_path,
+        profile=resolved,
+        external_ensemble_calibration_path=external_ensemble_calibration_path,
+    )
+    segment_decoder, resolved_segment_decoder_path, segment_decoder_disabled = _resolve_segment_decoder(
+        checkpoint_path=ckpt_path,
+        profile=resolved,
+        keyword_calibration=keyword_calibration,
+        runtime_device=runtime_device,
+    )
+    realtime_specialist_calibration, resolved_specialist_calibration_path = _resolve_realtime_specialist_calibration(
+        checkpoint_path=ckpt_path,
+        profile=resolved,
+    )
+    realtime_specialist, resolved_specialist_path = _resolve_realtime_specialist(
+        checkpoint_path=ckpt_path,
+        profile=resolved,
+        runtime_device=runtime_device,
+    )
 
     model = create_model(
         cfg["model"],
@@ -709,11 +932,11 @@ def load_realtime_demo(
         verifier = load_runtime_verifier(ckpt_path, device=runtime_device)
     else:
         zero = np.zeros((int(round(float(features.get("audio_seconds", CLIP_SECONDS)) * int(features["sample_rate"]))),), dtype=np.float32)
-        predict_kws12_from_waveforms(
+        predict_ensemble_ast_superb_from_waveforms(
             [zero],
-            model_id=resolved.external_kws_model,
             device=resolved.external_kws_device,
             sample_rate=int(features["sample_rate"]),
+            calibration=external_ensemble_calibration,
         )
 
     sample_rate = int(features.get("sample_rate", 16_000))
@@ -729,6 +952,16 @@ def load_realtime_demo(
         command31_labels=command31_labels,
         wheel=wheel,
         keyword_calibration=keyword_calibration,
+        keyword_calibration_path=resolved_calibration_path,
+        external_ensemble_calibration=external_ensemble_calibration,
+        external_ensemble_calibration_path=resolved_external_calibration_path,
+        segment_decoder=segment_decoder,
+        segment_decoder_path=resolved_segment_decoder_path,
+        segment_decoder_disabled=segment_decoder_disabled,
+        realtime_specialist=realtime_specialist,
+        realtime_specialist_path=resolved_specialist_path,
+        realtime_specialist_calibration=realtime_specialist_calibration,
+        realtime_specialist_calibration_path=resolved_specialist_calibration_path,
         sample_rate=sample_rate,
         clip_samples=clip_samples,
         audio_seconds=audio_seconds,
@@ -873,6 +1106,28 @@ def _keyword_runtime_params(
         min_margin = max(min_margin, float(overrides.get("min_margin", min_margin)))
         highlight_hold_ms = max(highlight_hold_ms, float(overrides.get("highlight_hold_ms", highlight_hold_ms)))
     return (conf_thr, vote_window, vote_min_count, prototype_bonus, min_margin, highlight_hold_ms)
+
+
+def _segment_runtime_params(
+    calibration: Dict[str, object] | None,
+    label: str | None,
+) -> tuple[float, float, float, float]:
+    payload = calibration or {}
+    defaults = payload.get("defaults", {}) if isinstance(payload.get("defaults", {}), dict) else {}
+    keywords = payload.get("keywords", {}) if isinstance(payload.get("keywords", {}), dict) else {}
+    entry = keywords.get(str(label), {}) if label else {}
+    if not isinstance(entry, dict):
+        entry = {}
+    keepalive_thr = float(entry.get("segment_keepalive_threshold", defaults.get("segment_keepalive_threshold", 0.18)))
+    min_duration_ms = float(entry.get("segment_min_duration_ms", defaults.get("segment_min_duration_ms", 160.0)))
+    accept_prob = float(entry.get("segment_accept_prob", defaults.get("segment_accept_prob", 0.55)))
+    close_grace_ms = float(entry.get("segment_close_grace_ms", defaults.get("segment_close_grace_ms", 140.0)))
+    return (
+        float(np.clip(keepalive_thr, 0.05, 0.98)),
+        max(0.0, min_duration_ms) / 1000.0,
+        float(np.clip(accept_prob, 0.05, 0.99)),
+        max(0.0, close_grace_ms) / 1000.0,
+    )
 
 
 def _confusable_groups(calibration: Dict[str, object] | None) -> Dict[str, Tuple[str, ...]]:
@@ -1069,6 +1324,12 @@ class RealtimeEngine:
         vote_min_count: int,
         passive_profile: PassiveKeywordProfile | None,
         keyword_calibration: Dict[str, object] | None,
+        external_ensemble_calibration: Dict[str, object] | None = None,
+        segment_decoder: LoadedSegmentDecoder | None = None,
+        segment_decoder_disabled: bool = True,
+        realtime_specialist: LoadedRealtimeSpecialist | None = None,
+        realtime_specialist_calibration: Dict[str, object] | None = None,
+        segment_runtime_enabled: bool = False,
         verifier: LoadedVerifier | None = None,
         runtime_label_backend: str = BASELINE_RUNTIME_LABEL_BACKEND,
         external_kws_model: str = ENSEMBLE_AST_SUPERB_MODEL_ID,
@@ -1097,6 +1358,12 @@ class RealtimeEngine:
         self.display_wake_thr = float(max(0.0, display_wake_thr))
         self.passive_profile = passive_profile
         self.keyword_calibration = dict(keyword_calibration or {})
+        self.external_ensemble_calibration = dict(external_ensemble_calibration or {})
+        self.segment_decoder = segment_decoder
+        self.segment_decoder_disabled = bool(segment_decoder_disabled)
+        self.realtime_specialist = realtime_specialist
+        self.realtime_specialist_calibration = dict(realtime_specialist_calibration or {})
+        self.segment_runtime_enabled = bool(segment_runtime_enabled)
         self.verifier = verifier
         self.default_vote_window = int(vote_window)
         self.default_vote_min_count = int(vote_min_count)
@@ -1134,6 +1401,11 @@ class RealtimeEngine:
         self._precheck_threshold = self.mic_min_rms
         self._last_active_label: str | None = None
         self._active_label_streak = 0
+        self._active_segment: ActiveSegmentState | None = None
+        self._finalized_segments: list[dict[str, object]] = []
+        self._matched_segment_label: str | None = None
+        self._matched_segment_conf = 0.0
+        self._matched_segment_hold_until = 0.0
         self._last_profile_update_at: Dict[str, float] = {}
         self.current_snapshot: DemoSnapshot | None = None
         self.reset_precheck(0.0)
@@ -1153,6 +1425,11 @@ class RealtimeEngine:
         self._ema_wake = None
         self._last_active_label = None
         self._active_label_streak = 0
+        self._active_segment = None
+        self._finalized_segments = []
+        self._matched_segment_label = None
+        self._matched_segment_conf = 0.0
+        self._matched_segment_hold_until = 0.0
         self.gate.reset(now=float(now))
 
     def bypass_precheck(self) -> None:
@@ -1269,6 +1546,16 @@ class RealtimeEngine:
         if self.runtime_label_backend != DEFAULT_RUNTIME_LABEL_BACKEND:
             return detector_command_probs, detector_kws12, BASELINE_RUNTIME_LABEL_BACKEND, ""
         try:
+            if self.external_kws_model == ENSEMBLE_AST_SUPERB_MODEL_ID:
+                external = predict_ensemble_ast_superb_from_waveforms(
+                    [model_waveform_np],
+                    device=self.external_kws_device,
+                    sample_rate=self.model_sample_rate,
+                    calibration=self.external_ensemble_calibration,
+                )
+                kws12_probs = external.probs[0].astype(np.float32, copy=False)
+                command_probs = _command31_probs_from_kws12_probs(kws12_probs, self.command31_labels)
+                return command_probs, kws12_probs, f"{DEFAULT_RUNTIME_LABEL_BACKEND}@{external.runtime_device}", ""
             external = predict_kws12_from_waveforms(
                 [model_waveform_np],
                 model_id=self.external_kws_model,
@@ -1281,6 +1568,478 @@ class RealtimeEngine:
         except Exception as exc:
             note = f"{type(exc).__name__}: {exc}"
             return detector_command_probs, detector_kws12, "detector-fallback", note
+
+    def _segment_threshold_vector(self) -> np.ndarray:
+        values = []
+        for label in SEGMENT_TARGET_LABELS:
+            keepalive_thr, _min_duration_s, _accept_prob, _close_grace_s = _segment_runtime_params(
+                self.keyword_calibration,
+                label,
+            )
+            values.append(float(keepalive_thr))
+        return np.asarray(values, dtype=np.float32)
+
+    def _segment_rule_scores(self, stats: SegmentFeatureStats) -> np.ndarray:
+        frames = max(int(stats.frame_count), 1)
+        duration = max(stats.duration_seconds, 1e-6)
+        scores = np.zeros((len(SEGMENT_TARGET_LABELS),), dtype=np.float32)
+        for idx, label in enumerate(SEGMENT_TARGET_LABELS):
+            keepalive_thr, _min_duration_s, _accept_prob, _close_grace_s = _segment_runtime_params(
+                self.keyword_calibration,
+                label,
+            )
+            peak = float(stats.probs_peak[idx])
+            mean = float(stats.probs_sum[idx] / frames)
+            auc_norm = float(stats.probs_auc[idx] / duration)
+            count_ratio = float(stats.count_above[idx] / frames)
+            top_ratio = float(stats.top_count[idx] / frames)
+            score = (0.34 * peak) + (0.22 * mean) + (0.18 * auc_norm) + (0.16 * count_ratio) + (0.10 * top_ratio)
+            if peak >= keepalive_thr:
+                score += 0.03
+            scores[idx] = float(score)
+        return scores
+
+    def _segment_accept_params(self, label: str | None) -> tuple[float, float, float, float, float, float]:
+        keepalive_thr, min_duration_s, accept_prob, close_grace_s = _segment_runtime_params(self.keyword_calibration, label)
+        _conf_thr, _vote_window, _vote_min_count, _prototype_bonus, min_margin, highlight_hold_ms = _keyword_runtime_params(
+            self.keyword_calibration,
+            label,
+            default_conf_thr=self.display_conf_thr,
+            default_vote_window=self.default_vote_window,
+            default_vote_min_count=self.default_vote_min_count,
+        )
+        return keepalive_thr, min_duration_s, accept_prob, close_grace_s, float(max(0.0, min_margin)), float(highlight_hold_ms) / 1000.0
+
+    def _specialist_params(self, label: str | None) -> tuple[float, float, float, str]:
+        calibration = self.realtime_specialist_calibration if isinstance(self.realtime_specialist_calibration, dict) else {}
+        defaults = calibration.get("default", {}) if isinstance(calibration.get("default", {}), dict) else {}
+        per_label = calibration.get("per_label", {}) if isinstance(calibration.get("per_label", {}), dict) else {}
+        entry = per_label.get(str(label), {}) if isinstance(per_label.get(str(label), {}), dict) else {}
+        accept_prob = float(entry.get("accept_prob", defaults.get("accept_prob", 0.64)))
+        min_margin = float(entry.get("min_margin", defaults.get("min_margin", 0.06)))
+        trigger_prob = float(entry.get("trigger_prob", defaults.get("trigger_prob", 0.24)))
+        role = str(entry.get("role", defaults.get("role", "guard" if str(label) == "up" else "rescue"))).strip().lower()
+        return accept_prob, min_margin, trigger_prob, role
+
+    def _specialist_unknown_trigger_prob(self) -> float:
+        calibration = self.realtime_specialist_calibration if isinstance(self.realtime_specialist_calibration, dict) else {}
+        return float(calibration.get("unknown_trigger_prob", 0.18))
+
+    def _apply_hard_word_specialist(
+        self,
+        *,
+        active_segment: ActiveSegmentState | None,
+        accepted_label: str | None,
+        top_label: str,
+        top_prob: float,
+        margin: float,
+    ) -> tuple[str | None, float, float, np.ndarray | None]:
+        if not bool(self.realtime_specialist_calibration.get("enabled", True)):
+            return accepted_label, top_prob, margin, None
+        if self.realtime_specialist is None or active_segment is None or active_segment.hard_peak_waveform is None:
+            return accepted_label, top_prob, margin, None
+
+        should_run = False
+        if accepted_label in HARD_WORD_SPECIALIST_TARGETS or top_label in HARD_WORD_SPECIALIST_TARGETS:
+            should_run = True
+        elif accepted_label is None and active_segment.hard_peak_prob >= self._specialist_unknown_trigger_prob():
+            should_run = True
+        if not should_run:
+            return accepted_label, top_prob, margin, None
+
+        specialist_probs = predict_realtime_specialist(self.realtime_specialist, active_segment.hard_peak_waveform)
+        specialist_top_idx = int(np.argmax(specialist_probs))
+        specialist_top_label = str(HARD_WORD_SPECIALIST_INDEX_TO_LABEL[specialist_top_idx])
+        specialist_top_prob = float(specialist_probs[specialist_top_idx])
+        if specialist_probs.size > 1:
+            top2 = np.partition(specialist_probs, -2)[-2:]
+            specialist_margin = float(top2[-1] - top2[-2])
+        else:
+            specialist_margin = specialist_top_prob
+
+        generic_hard_label = accepted_label if accepted_label in HARD_WORD_SPECIALIST_TARGETS else (
+            top_label if top_label in HARD_WORD_SPECIALIST_TARGETS else active_segment.hard_peak_label
+        )
+        target_label = specialist_top_label if specialist_top_label in HARD_WORD_SPECIALIST_TARGETS else generic_hard_label
+        accept_prob, min_margin, trigger_prob, role = self._specialist_params(target_label)
+        specialist_accepts = (
+            specialist_top_label in HARD_WORD_SPECIALIST_TARGETS
+            and specialist_top_prob >= accept_prob
+            and specialist_margin >= min_margin
+        )
+
+        if role == "guard":
+            if accepted_label == "up":
+                if specialist_top_label == "up" and specialist_accepts:
+                    return accepted_label, max(top_prob, specialist_top_prob), max(margin, specialist_margin), specialist_probs
+                if specialist_top_prob >= trigger_prob and specialist_top_label != "up":
+                    return None, specialist_top_prob, specialist_margin, specialist_probs
+            return accepted_label, top_prob, margin, specialist_probs
+
+        if accepted_label in {"on", "off", "go"}:
+            if specialist_top_label == accepted_label and specialist_accepts:
+                return accepted_label, max(top_prob, specialist_top_prob), max(margin, specialist_margin), specialist_probs
+            return accepted_label, top_prob, margin, specialist_probs
+
+        if accepted_label is None and specialist_accepts and specialist_top_label in {"on", "off", "go"}:
+            return specialist_top_label, specialist_top_prob, specialist_margin, specialist_probs
+        return accepted_label, top_prob, margin, specialist_probs
+
+    def _resolve_segment_prediction(
+        self,
+        stats: SegmentFeatureStats,
+        *,
+        active_segment: ActiveSegmentState | None = None,
+    ) -> tuple[str | None, float, float, np.ndarray, np.ndarray | None]:
+        rule_scores = self._segment_rule_scores(stats)
+        if self.segment_decoder is not None and not self.segment_decoder_disabled:
+            decoder_probs = predict_segment_decoder(self.segment_decoder, stats.as_feature_vector())
+        else:
+            decoder_probs = np.zeros((len(SEGMENT_DECODER_LABELS),), dtype=np.float32)
+            if rule_scores.size:
+                decoder_probs[:-1] = rule_scores
+            decoder_probs[-1] = max(0.0, 1.0 - float(rule_scores.max() if rule_scores.size else 0.0))
+            total = float(decoder_probs.sum())
+            if total > 0.0:
+                decoder_probs /= total
+
+        top_idx = int(np.argmax(decoder_probs))
+        top_label = str(SEGMENT_DECODER_INDEX_TO_LABEL[top_idx])
+        top_prob = float(decoder_probs[top_idx])
+        if decoder_probs.size > 1:
+            top2 = np.partition(decoder_probs, -2)[-2:]
+            margin = float(top2[-1] - top2[-2])
+        else:
+            margin = top_prob
+
+        if top_label == UNKNOWN_LABEL:
+            accepted_label = None
+        else:
+            _keepalive_thr, min_duration_s, accept_prob, _close_grace_s, min_margin, _highlight_hold_s = self._segment_accept_params(top_label)
+            if stats.duration_seconds < min_duration_s:
+                accepted_label = None
+            elif top_prob < accept_prob:
+                accepted_label = None
+            elif margin < min_margin:
+                accepted_label = None
+            else:
+                accepted_label = top_label
+
+        accepted_label, top_prob, margin, specialist_probs = self._apply_hard_word_specialist(
+            active_segment=active_segment,
+            accepted_label=accepted_label,
+            top_label=top_label,
+            top_prob=top_prob,
+            margin=margin,
+        )
+        return accepted_label, top_prob, margin, decoder_probs, specialist_probs
+
+    def _append_finalized_segment(
+        self,
+        *,
+        stats: SegmentFeatureStats,
+        active_segment: ActiveSegmentState | None,
+        accepted_label: str | None,
+        predicted_prob: float,
+        margin: float,
+        decoder_probs: np.ndarray,
+        specialist_probs: np.ndarray | None = None,
+    ) -> None:
+        record = {
+            "start_time": float(stats.started_at or 0.0),
+            "end_time": float(stats.ended_at or stats.started_at or 0.0),
+            "duration_seconds": float(stats.duration_seconds),
+            "frame_count": int(stats.frame_count),
+            "features": stats.as_feature_vector().astype(np.float32, copy=False),
+            "accepted_label": accepted_label,
+            "predicted_prob": float(predicted_prob),
+            "margin": float(margin),
+            "decoder_probs": np.asarray(decoder_probs, dtype=np.float32),
+            "specialist_probs": np.asarray(specialist_probs, dtype=np.float32) if specialist_probs is not None else None,
+            "hard_peak_label": None if active_segment is None else active_segment.hard_peak_label,
+            "hard_peak_prob": 0.0 if active_segment is None else float(active_segment.hard_peak_prob),
+            "hard_peak_time": 0.0 if active_segment is None else float(active_segment.hard_peak_time),
+        }
+        self._finalized_segments.append(record)
+
+    def drain_finalized_segments(self) -> list[dict[str, object]]:
+        items = list(self._finalized_segments)
+        self._finalized_segments.clear()
+        return items
+
+    def _update_segment_runtime(
+        self,
+        *,
+        now: float,
+        now_wall: float,
+        gate_open: bool,
+        runtime_kws12_probs: np.ndarray,
+        wake_prob: float,
+        model_waveform_np: np.ndarray | None = None,
+    ) -> tuple[str | None, float]:
+        target_probs = np.asarray(runtime_kws12_probs[2 : 2 + len(SEGMENT_TARGET_LABELS)], dtype=np.float32)
+        if target_probs.size != len(SEGMENT_TARGET_LABELS):
+            target_probs = np.zeros((len(SEGMENT_TARGET_LABELS),), dtype=np.float32)
+        if self._matched_segment_label is not None and now >= self._matched_segment_hold_until:
+            self._matched_segment_label = None
+            self._matched_segment_conf = 0.0
+            self._matched_segment_hold_until = 0.0
+
+        top_idx = int(np.argmax(target_probs)) if target_probs.size else 0
+        top_label = str(SEGMENT_TARGET_LABELS[top_idx])
+        top_prob = float(target_probs[top_idx]) if target_probs.size else 0.0
+        keepalive_thr, _min_duration_s, _accept_prob, close_grace_s, _min_margin, highlight_hold_s = self._segment_accept_params(top_label)
+        force_open_thr = resolve_external_force_open_conf_threshold(self.keyword_calibration, top_label)
+        should_open = bool(gate_open) or top_prob >= force_open_thr
+        has_signal = bool(gate_open) or top_prob >= keepalive_thr
+
+        if self._active_segment is None and should_open:
+            self._active_segment = ActiveSegmentState(
+                stats=SegmentFeatureStats(thresholds=self._segment_threshold_vector()),
+                started_at=float(now),
+                last_signal_at=float(now),
+            )
+
+        if self._active_segment is not None:
+            self._active_segment.stats.update(now=float(now), target_probs=target_probs, wake_prob=float(wake_prob))
+            hard_probs = {
+                label: float(target_probs[SEGMENT_TARGET_LABELS.index(label)])
+                for label in HARD_WORD_SPECIALIST_TARGETS
+                if label in SEGMENT_TARGET_LABELS
+            }
+            if hard_probs:
+                hard_label = max(hard_probs, key=hard_probs.get)
+                hard_prob = float(hard_probs[hard_label])
+                if hard_prob >= self._active_segment.hard_peak_prob:
+                    self._active_segment.hard_peak_label = hard_label
+                    self._active_segment.hard_peak_prob = hard_prob
+                    self._active_segment.hard_peak_time = float(now)
+                    if model_waveform_np is not None:
+                        self._active_segment.hard_peak_waveform = np.asarray(model_waveform_np, dtype=np.float32).copy()
+            if has_signal:
+                self._active_segment.last_signal_at = float(now)
+
+            if (not gate_open) and (float(now) - float(self._active_segment.last_signal_at)) >= max(close_grace_s, self.hold_s):
+                stats = self._active_segment.stats
+                accepted_label, predicted_prob, margin, decoder_probs, specialist_probs = self._resolve_segment_prediction(
+                    stats,
+                    active_segment=self._active_segment,
+                )
+                self._append_finalized_segment(
+                    stats=stats,
+                    active_segment=self._active_segment,
+                    accepted_label=accepted_label,
+                    predicted_prob=predicted_prob,
+                    margin=margin,
+                    decoder_probs=decoder_probs,
+                    specialist_probs=specialist_probs,
+                )
+                self._active_segment = None
+                if accepted_label is not None:
+                    self._matched_segment_label = accepted_label
+                    self._matched_segment_conf = float(predicted_prob)
+                    self._matched_segment_hold_until = float(now) + max(self.hold_s, highlight_hold_s)
+
+        return self._matched_segment_label, self._matched_segment_conf
+
+    def flush_pending_segment(self, *, now: float, now_wall: float) -> DemoSnapshot | None:
+        if not self.segment_runtime_enabled or self._active_segment is None:
+            return None
+        stats = self._active_segment.stats
+        accepted_label, predicted_prob, margin, decoder_probs, specialist_probs = self._resolve_segment_prediction(
+            stats,
+            active_segment=self._active_segment,
+        )
+        self._append_finalized_segment(
+            stats=stats,
+            active_segment=self._active_segment,
+            accepted_label=accepted_label,
+            predicted_prob=predicted_prob,
+            margin=margin,
+            decoder_probs=decoder_probs,
+            specialist_probs=specialist_probs,
+        )
+        self._active_segment = None
+        if accepted_label is None:
+            return None
+        self._matched_segment_label = accepted_label
+        self._matched_segment_conf = float(predicted_prob)
+        _keepalive_thr, _min_duration_s, _accept_prob, _close_grace_s, _min_margin, highlight_hold_s = self._segment_accept_params(
+            accepted_label
+        )
+        self._matched_segment_hold_until = float(now) + max(self.hold_s, highlight_hold_s)
+        snapshot = self._build_snapshot(
+            now_wall=now_wall,
+            gate_open=True,
+            gate_state="segment-final",
+            command_label=accepted_label,
+            display_label=accepted_label.upper(),
+            active_label=accepted_label,
+            highlight_label=accepted_label,
+            command_conf=float(predicted_prob),
+            wake_prob=0.0 if self._ema_wake is None else float(self._ema_wake),
+            wake_open_thr=self.gate.open_threshold,
+            wake_close_thr=self.gate.close_threshold,
+            latency_ms=0.0,
+            prompt_status="MATCH",
+            queue_fill_ratio=0.0,
+            runtime_label_backend=self.runtime_label_backend,
+            backend_note="segment-flush",
+        )
+        return snapshot
+
+    def _process_runtime_step(
+        self,
+        *,
+        detector_probs: np.ndarray,
+        wake_prob: float,
+        decision_command_probs: np.ndarray,
+        runtime_kws12_probs: np.ndarray,
+        model_waveform_np: np.ndarray | None,
+        backend_name: str,
+        backend_note: str,
+        now: float,
+        now_wall: float,
+        queue_fill_ratio: float,
+        latency_ms: float,
+        prototype_similarity: float = 0.0,
+        embedding: torch.Tensor | None = None,
+    ) -> DemoSnapshot:
+        self._ema_probs = ema_update(self._ema_probs, detector_probs, self.ema_alpha)
+        self._ema_wake = ema_update_scalar(self._ema_wake, float(wake_prob), self.ema_alpha)
+
+        detector_command_label = self.command31_labels[int(np.argmax(self._ema_probs))]
+        detector_command_conf = float(np.max(self._ema_probs))
+        wake_prob_s = float(self._ema_wake)
+        runtime_command_conf = float(np.max(runtime_kws12_probs)) if runtime_kws12_probs.size else detector_command_conf
+        runtime_top_label = KWS12_LABELS[int(np.argmax(runtime_kws12_probs))] if runtime_kws12_probs.size else detector_command_label
+        gate_command_conf = (
+            detector_command_conf
+            if backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"}
+            else max(detector_command_conf, runtime_command_conf)
+        )
+        gate_open, gate_state, open_thr, close_thr = self.gate.update(
+            now=now,
+            wake_prob=wake_prob_s,
+            command_conf=gate_command_conf,
+        )
+        decision_gate_open = bool(gate_open)
+        decision_gate_state = str(gate_state)
+        decision_display_wake_thr = self.display_wake_thr
+        if backend_name.startswith(DEFAULT_RUNTIME_LABEL_BACKEND):
+            force_open_conf_thr = resolve_external_force_open_conf_threshold(
+                self.keyword_calibration,
+                runtime_top_label if runtime_top_label in TARGET_KEYWORDS_10 else None,
+            )
+            if runtime_top_label in TARGET_KEYWORDS_10 and runtime_command_conf >= max(force_open_conf_thr, self.display_conf_thr):
+                decision_gate_open = True
+                if not gate_open:
+                    decision_gate_state = "open"
+            decision_display_wake_thr = 0.0
+        raw_active_label, _fallback_display_label, _raw_decision_conf = resolve_display_candidate(
+            self.wheel,
+            self.command31_labels,
+            decision_command_probs,
+            decision_gate_open,
+        )
+        decision = shared_resolve_runtime_decision(
+            now=now,
+            wheel=self.wheel,
+            command31_labels=self.command31_labels,
+            command_probs=decision_command_probs,
+            gate_open=decision_gate_open,
+            gate_state=decision_gate_state,
+            wake_prob=wake_prob_s,
+            display_wake_thr=decision_display_wake_thr,
+            calibration=self.keyword_calibration,
+            default_conf_thr=self.display_conf_thr,
+            default_vote_window=self.default_vote_window,
+            default_vote_min_count=self.default_vote_min_count,
+            smoother=self._label_smoother,
+            preview=self._highlight_preview,
+            prototype_similarity=prototype_similarity,
+            listening_label="LISTENING",
+            listening_message="Listening for a stable keyword match.",
+            calibrating_label="CALIBRATING",
+            calibrating_message="Calibrating the live gate. Keep speaking naturally.",
+            matched_message_template="Detected '{label}' in the live stream.",
+        )
+        active_label = decision.active_label
+        display_label = decision.display_label
+        highlight_label = decision.highlight_label
+        decision_conf = decision.command_confidence
+        detector_kws12_probs = aggregate_command_probs_to_kws12(self._ema_probs, self.command31_labels)
+        detector_label = KWS12_LABELS[int(np.argmax(detector_kws12_probs))]
+        if detector_kws12_probs.size > 1:
+            top2 = np.partition(detector_kws12_probs, -2)[-2:]
+            detector_margin = float(top2[-1] - top2[-2])
+        else:
+            detector_margin = float(detector_kws12_probs[int(np.argmax(detector_kws12_probs))])
+
+        verifier_confirmed = True
+        if self.segment_runtime_enabled and backend_name.startswith(DEFAULT_RUNTIME_LABEL_BACKEND):
+            segment_label, segment_conf = self._update_segment_runtime(
+                now=now,
+                now_wall=now_wall,
+                gate_open=decision_gate_open,
+                runtime_kws12_probs=runtime_kws12_probs,
+                wake_prob=wake_prob_s,
+                model_waveform_np=model_waveform_np,
+            )
+            active_label = segment_label
+            decision_conf = float(segment_conf) if segment_label is not None else float(decision.command_confidence)
+            display_label = segment_label.upper() if segment_label is not None else decision.display_label
+            highlight_label = segment_label if segment_label is not None else decision.highlight_label
+        elif backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"}:
+            verifier_candidate = active_label or select_verifier_candidate(
+                detector_label=detector_label,
+                detector_margin=detector_margin,
+                detector_probs_kws12=detector_kws12_probs,
+                decision_profile="stable",
+                margin_trigger=0.20,
+            )
+            verifier_decision = None
+            if verifier_candidate in TARGET_KEYWORDS_10 and embedding is not None:
+                verifier_decision = verify_keyword(
+                    self.verifier,
+                    embedding.unsqueeze(0),
+                    candidate_label=verifier_candidate,
+                )
+            verifier_confirmed = verifier_decision is None or verifier_decision.accepted
+            if verifier_candidate in TARGET_KEYWORDS_10 and not verifier_confirmed:
+                active_label = None
+                display_label = "UNKNOWN"
+                decision_conf = 0.0
+        if active_label is not None and active_label == self._last_active_label:
+            self._active_label_streak += 1
+        elif active_label is not None:
+            self._last_active_label = active_label
+            self._active_label_streak = 1
+        else:
+            self._last_active_label = None
+            self._active_label_streak = 0
+
+        prompt_status = "MATCH" if active_label is not None else decision.prompt_label
+        if active_label is None and prompt_status == "MATCH":
+            prompt_status = "LISTENING"
+        return self._build_snapshot(
+            now_wall=now_wall,
+            gate_open=decision_gate_open,
+            gate_state=decision_gate_state,
+            command_label=runtime_top_label if self.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND else detector_command_label,
+            display_label=display_label,
+            active_label=active_label,
+            highlight_label=highlight_label,
+            command_conf=decision_conf,
+            wake_prob=wake_prob_s,
+            wake_open_thr=float(open_thr),
+            wake_close_thr=float(close_thr),
+            latency_ms=float(latency_ms),
+            prompt_status=prompt_status,
+            queue_fill_ratio=queue_fill_ratio,
+            runtime_label_backend=backend_name,
+            backend_note=backend_note,
+        )
 
     def process_chunk(
         self,
@@ -1353,140 +2112,46 @@ class RealtimeEngine:
             wake_prob = float(torch.sigmoid(out.wake_logits).squeeze(0).item())
             embedding = out.embedding.squeeze(0).detach().cpu()
 
-        self._ema_probs = ema_update(self._ema_probs, probs, self.ema_alpha)
-        self._ema_wake = ema_update_scalar(self._ema_wake, wake_prob, self.ema_alpha)
-
-        detector_command_label = self.command31_labels[int(np.argmax(self._ema_probs))]
-        detector_command_conf = float(np.max(self._ema_probs))
-        wake_prob_s = float(self._ema_wake)
         decision_command_probs, runtime_kws12_probs, backend_name, backend_note = self._resolve_runtime_label_probs(
-            detector_command_probs=self._ema_probs,
+            detector_command_probs=probs,
             model_waveform_np=waveform_model_np,
         )
-        runtime_command_conf = float(np.max(runtime_kws12_probs)) if runtime_kws12_probs.size else detector_command_conf
-        runtime_top_label = KWS12_LABELS[int(np.argmax(runtime_kws12_probs))] if runtime_kws12_probs.size else detector_command_label
-        gate_command_conf = detector_command_conf if backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"} else max(detector_command_conf, runtime_command_conf)
-        gate_open, gate_state, open_thr, close_thr = self.gate.update(
-            now=now,
-            wake_prob=wake_prob_s,
-            command_conf=gate_command_conf,
-        )
-        decision_gate_open = bool(gate_open)
-        decision_gate_state = str(gate_state)
-        decision_display_wake_thr = self.display_wake_thr
-        if backend_name.startswith(DEFAULT_RUNTIME_LABEL_BACKEND):
-            if runtime_top_label in TARGET_KEYWORDS_10 and runtime_command_conf >= max(0.80, self.display_conf_thr):
-                decision_gate_open = True
-                if not gate_open:
-                    decision_gate_state = "open"
-            decision_display_wake_thr = 0.0
+        prototype_similarity = 0.0
         raw_active_label, _fallback_display_label, _raw_decision_conf = resolve_display_candidate(
             self.wheel,
             self.command31_labels,
             decision_command_probs,
-            decision_gate_open,
+            True,
         )
-        prototype_similarity = 0.0
         if raw_active_label in TARGET_KEYWORDS_10 and self.passive_profile is not None:
             prototype_similarity = self.passive_profile.similarity(raw_active_label, embedding)
-        decision = shared_resolve_runtime_decision(
+        snapshot = self._process_runtime_step(
+            detector_probs=probs,
+            wake_prob=wake_prob,
+            decision_command_probs=decision_command_probs,
+            runtime_kws12_probs=runtime_kws12_probs,
+            model_waveform_np=waveform_model_np,
+            backend_name=backend_name,
+            backend_note=backend_note,
             now=now,
-            wheel=self.wheel,
-            command31_labels=self.command31_labels,
-            command_probs=decision_command_probs,
-            gate_open=decision_gate_open,
-            gate_state=decision_gate_state,
-            wake_prob=wake_prob_s,
-            display_wake_thr=decision_display_wake_thr,
-            calibration=self.keyword_calibration,
-            default_conf_thr=self.display_conf_thr,
-            default_vote_window=self.default_vote_window,
-            default_vote_min_count=self.default_vote_min_count,
-            smoother=self._label_smoother,
-            preview=self._highlight_preview,
+            now_wall=now_wall,
+            queue_fill_ratio=queue_fill_ratio,
+            latency_ms=(t1 - t0) * 1000.0,
             prototype_similarity=prototype_similarity,
-            listening_label="LISTENING",
-            listening_message="Listening for a stable keyword match.",
-            calibrating_label="CALIBRATING",
-            calibrating_message="Calibrating the live gate. Keep speaking naturally.",
-            matched_message_template="Detected '{label}' in the live stream.",
+            embedding=embedding,
         )
-        active_label = decision.active_label
-        display_label = decision.display_label
-        highlight_label = decision.highlight_label
-        decision_conf = decision.command_confidence
-        detector_kws12_probs = aggregate_command_probs_to_kws12(self._ema_probs, self.command31_labels)
-        detector_label = KWS12_LABELS[int(np.argmax(detector_kws12_probs))]
-        if detector_kws12_probs.size > 1:
-            top2 = np.partition(detector_kws12_probs, -2)[-2:]
-            detector_margin = float(top2[-1] - top2[-2])
-        else:
-            detector_margin = float(detector_kws12_probs[int(np.argmax(detector_kws12_probs))])
-
-        verifier_confirmed = True
-        if backend_name in {BASELINE_RUNTIME_LABEL_BACKEND, "detector-fallback"}:
-            verifier_candidate = active_label or select_verifier_candidate(
-                detector_label=detector_label,
-                detector_margin=detector_margin,
-                detector_probs_kws12=detector_kws12_probs,
-                decision_profile="stable",
-                margin_trigger=0.20,
-            )
-            verifier_decision = None
-            if verifier_candidate in TARGET_KEYWORDS_10:
-                verifier_decision = verify_keyword(
-                    self.verifier,
-                    feature.unsqueeze(0),
-                    candidate_label=verifier_candidate,
-                )
-            verifier_confirmed = verifier_decision is None or verifier_decision.accepted
-            if verifier_candidate in TARGET_KEYWORDS_10 and not verifier_confirmed:
-                active_label = None
-                display_label = "UNKNOWN"
-                decision_conf = 0.0
-        if active_label is not None and active_label == self._last_active_label:
-            self._active_label_streak += 1
-        elif active_label is not None:
-            self._last_active_label = active_label
-            self._active_label_streak = 1
-        else:
-            self._last_active_label = None
-            self._active_label_streak = 0
-
         if (
             self.passive_profile is not None
-            and active_label in TARGET_KEYWORDS_10
-            and verifier_confirmed
-            and wake_prob_s >= 0.92
-            and decision_conf >= 0.85
+            and snapshot.active_label in TARGET_KEYWORDS_10
+            and snapshot.wake_prob >= 0.92
+            and snapshot.command_conf >= 0.85
             and self._active_label_streak >= 3
         ):
-            last_update = self._last_profile_update_at.get(active_label, 0.0)
+            last_update = self._last_profile_update_at.get(snapshot.active_label, 0.0)
             if (now - last_update) >= 1.0:
-                self.passive_profile.update(active_label, embedding)
-                self._last_profile_update_at[active_label] = now
-
-        prompt_status = decision.prompt_label
-        if active_label is None and prompt_status == "MATCH":
-            prompt_status = "LISTENING"
-        return self._build_snapshot(
-            now_wall=now_wall,
-            gate_open=gate_open,
-            gate_state=gate_state,
-            command_label=runtime_top_label if self.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND else detector_command_label,
-            display_label=display_label,
-            active_label=active_label,
-            highlight_label=highlight_label,
-            command_conf=decision_conf,
-            wake_prob=wake_prob_s,
-            wake_open_thr=float(open_thr),
-            wake_close_thr=float(close_thr),
-            latency_ms=(t1 - t0) * 1000.0,
-            prompt_status=prompt_status,
-            queue_fill_ratio=queue_fill_ratio,
-            runtime_label_backend=backend_name,
-            backend_note=backend_note,
-        )
+                self.passive_profile.update(snapshot.active_label, embedding)
+                self._last_profile_update_at[snapshot.active_label] = now
+        return snapshot
 
 
 class InferenceWorker(threading.Thread):
@@ -1523,6 +2188,12 @@ class InferenceWorker(threading.Thread):
         reset_precheck_event: threading.Event,
         passive_profile: PassiveKeywordProfile | None,
         keyword_calibration: Dict[str, object] | None,
+        external_ensemble_calibration: Dict[str, object] | None,
+        segment_decoder: LoadedSegmentDecoder | None,
+        segment_decoder_disabled: bool,
+        realtime_specialist: LoadedRealtimeSpecialist | None,
+        realtime_specialist_calibration: Dict[str, object] | None,
+        segment_runtime_enabled: bool,
         verifier: LoadedVerifier | None = None,
         runtime_label_backend: str = BASELINE_RUNTIME_LABEL_BACKEND,
         external_kws_model: str = ENSEMBLE_AST_SUPERB_MODEL_ID,
@@ -1560,6 +2231,12 @@ class InferenceWorker(threading.Thread):
             vote_min_count=vote_min_count,
             passive_profile=passive_profile,
             keyword_calibration=keyword_calibration,
+            external_ensemble_calibration=external_ensemble_calibration,
+            segment_decoder=segment_decoder,
+            segment_decoder_disabled=segment_decoder_disabled,
+            realtime_specialist=realtime_specialist,
+            realtime_specialist_calibration=realtime_specialist_calibration,
+            segment_runtime_enabled=segment_runtime_enabled,
             verifier=verifier,
             runtime_label_backend=runtime_label_backend,
             external_kws_model=external_kws_model,
@@ -1793,6 +2470,8 @@ def main() -> None:
             demo_profile=args.demo_profile,
             detector_device_preference=args.device,
             selection_profile=args.selection_profile,
+            keyword_calibration_path=args.keyword_calibration_path,
+            external_ensemble_calibration_path=args.external_ensemble_calibration_path,
             wheel=args.wheel,
             runtime_label_backend=args.runtime_label_backend,
             external_kws_model=args.external_kws_model,
@@ -1985,6 +2664,12 @@ def main() -> None:
             reset_precheck_event=reset_precheck,
             passive_profile=passive_profile,
             keyword_calibration=keyword_calibration,
+            external_ensemble_calibration=bundle.external_ensemble_calibration,
+            segment_decoder=bundle.segment_decoder,
+            segment_decoder_disabled=bundle.segment_decoder_disabled,
+            realtime_specialist=bundle.realtime_specialist,
+            realtime_specialist_calibration=bundle.realtime_specialist_calibration,
+            segment_runtime_enabled=bundle.resolved_profile.demo_profile == REALTIME_TUNED_DEMO_PROFILE,
             verifier=verifier,
             runtime_label_backend=bundle.resolved_profile.runtime_label_backend,
             external_kws_model=bundle.resolved_profile.external_kws_model,

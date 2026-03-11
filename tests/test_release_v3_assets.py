@@ -25,7 +25,11 @@ def test_generate_release_assets_builds_expected_files(tmp_path):
     summary = module.build_assets()
 
     assert summary["headline"]["overall_passed"] is True
-    assert summary["release_claim"] in {"offline_validated_realtime_smoke_only", "full_realtime_validated"}
+    assert summary["release_claim"] in {
+        "offline_validated_realtime_smoke_only",
+        "offline_validated_realtime_full_failed",
+        "full_realtime_validated",
+    }
 
     per_class = module.ASSETS_DIR / "per_class_valid_test.png"
     latency = module.ASSETS_DIR / "latency_vs_accuracy.png"
@@ -41,3 +45,4 @@ def test_generate_release_assets_builds_expected_files(tmp_path):
     assert payload["headline"]["model"] == "ensemble/ast-superb-kws12"
     assert len(payload["version_rows"]) == 3
     assert any(row["version"] == "v3 (main / v3.0.0)" for row in payload["version_rows"])
+    assert payload["realtime_status"]["status"] in {"smoke_only", "full_failed", "full_passed"}

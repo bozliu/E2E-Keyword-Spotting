@@ -27,12 +27,33 @@ SUPPORTED_EXTERNAL_MODEL_IDS = (
 
 _UNKNOWN_ALIASES = {"unknown", "_unknown_", "<unk>"}
 _SILENCE_ALIASES = {"silence", "_silence_", "_background_noise_"}
+DEFAULT_EXTERNAL_ENSEMBLE_DEFAULTS: dict[str, float] = {
+    "silence_weight": 1.0,
+    "unknown_superb_weight": 1.2,
+    "unknown_ast_weight": 1.2,
+    "target_ast_weight": 1.0,
+    "target_superb_residual_weight": 0.2,
+    "target_global_scale": 1.0,
+    "unknown_bias": 0.0,
+}
 
 
 @dataclass(frozen=True)
 class ExternalKWSBatchResult:
     model_id: str
     runtime_device: str
+    probs: np.ndarray
+    top_indices: np.ndarray
+    top_labels: tuple[str, ...]
+    margins: np.ndarray
+
+
+@dataclass(frozen=True)
+class ExternalEnsembleBatchResult:
+    model_id: str
+    runtime_device: str
+    ast_probs: np.ndarray
+    superb_probs: np.ndarray
     probs: np.ndarray
     top_indices: np.ndarray
     top_labels: tuple[str, ...]
@@ -124,26 +145,118 @@ def _aggregate_raw_probs_to_kws12(raw_probs: np.ndarray, id2label: Mapping[int, 
     return kws12
 
 
+def default_external_ensemble_calibration(
+    *,
+    model_id: str = ENSEMBLE_AST_SUPERB_MODEL_ID,
+    mode: str = "offline",
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "model_id": str(model_id),
+        "mode": str(mode),
+        "defaults": dict(DEFAULT_EXTERNAL_ENSEMBLE_DEFAULTS),
+        "per_label_bias": {label: 0.0 for label in TARGET_KEYWORDS_10},
+    }
+
+
+def save_external_ensemble_calibration(path: str | Path, payload: Mapping[str, object]) -> None:
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(dict(payload), indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def load_external_ensemble_calibration(path: str | Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    target = Path(path).expanduser().resolve()
+    if not target.exists():
+        return {}
+    return json.loads(target.read_text(encoding="utf-8"))
+
+
+def _external_ensemble_defaults(calibration: Mapping[str, object] | None) -> dict[str, float]:
+    resolved = dict(DEFAULT_EXTERNAL_ENSEMBLE_DEFAULTS)
+    if not isinstance(calibration, Mapping):
+        return resolved
+    defaults = calibration.get("defaults", {})
+    if not isinstance(defaults, Mapping):
+        return resolved
+    for key, fallback in DEFAULT_EXTERNAL_ENSEMBLE_DEFAULTS.items():
+        try:
+            resolved[key] = float(defaults.get(key, fallback))
+        except (TypeError, ValueError):
+            resolved[key] = float(fallback)
+    return resolved
+
+
+def _external_ensemble_biases(calibration: Mapping[str, object] | None) -> dict[str, float]:
+    biases = {label: 0.0 for label in TARGET_KEYWORDS_10}
+    if not isinstance(calibration, Mapping):
+        return biases
+    per_label = calibration.get("per_label_bias", {})
+    if not isinstance(per_label, Mapping):
+        return biases
+    for label in TARGET_KEYWORDS_10:
+        try:
+            biases[label] = float(per_label.get(label, 0.0))
+        except (TypeError, ValueError):
+            biases[label] = 0.0
+    return biases
+
+
 def _blend_ast_superb_probs(
     ast_probs: np.ndarray,
     superb_probs: np.ndarray,
     *,
+    calibration: Mapping[str, object] | None = None,
     silence_weight: float = 1.0,
     unknown_superb_weight: float = 1.2,
     unknown_ast_weight: float = 1.2,
+    target_ast_weight: float = 1.0,
     target_superb_residual_weight: float = 0.2,
+    target_global_scale: float = 1.0,
+    unknown_bias: float = 0.0,
 ) -> np.ndarray:
     ast = np.asarray(ast_probs, dtype=np.float32)
     superb = np.asarray(superb_probs, dtype=np.float32)
     if ast.shape != superb.shape:
         raise ValueError(f"AST/SUPERB probs must share the same shape, got {ast.shape} vs {superb.shape}")
+    if calibration:
+        defaults = _external_ensemble_defaults(calibration)
+        silence_weight = defaults["silence_weight"]
+        unknown_superb_weight = defaults["unknown_superb_weight"]
+        unknown_ast_weight = defaults["unknown_ast_weight"]
+        target_ast_weight = defaults["target_ast_weight"]
+        target_superb_residual_weight = defaults["target_superb_residual_weight"]
+        target_global_scale = defaults["target_global_scale"]
+        unknown_bias = defaults["unknown_bias"]
+    per_label_bias = _external_ensemble_biases(calibration)
     blended = np.zeros_like(ast)
     blended[:, 0] = float(silence_weight) * superb[:, 0]
-    blended[:, 1] = float(unknown_superb_weight) * superb[:, 1] + float(unknown_ast_weight) * ast[:, 1]
-    blended[:, 2:] = ast[:, 2:] + float(target_superb_residual_weight) * superb[:, 2:]
+    blended[:, 1] = (
+        float(unknown_superb_weight) * superb[:, 1]
+        + float(unknown_ast_weight) * ast[:, 1]
+        + float(unknown_bias)
+    )
+    blended[:, 2:] = (
+        (float(target_ast_weight) * ast[:, 2:])
+        + (float(target_superb_residual_weight) * superb[:, 2:])
+    ) * float(target_global_scale)
+    for offset, label in enumerate(TARGET_KEYWORDS_10):
+        blended[:, offset + 2] += float(per_label_bias.get(label, 0.0))
+    np.maximum(blended, 0.0, out=blended)
     denom = blended.sum(axis=1, keepdims=True)
     denom = np.where(denom <= 0.0, 1.0, denom)
     return blended / denom
+
+
+def blend_ast_superb_probs(
+    ast_probs: np.ndarray,
+    superb_probs: np.ndarray,
+    *,
+    calibration: Mapping[str, object] | None = None,
+) -> np.ndarray:
+    return _blend_ast_superb_probs(ast_probs, superb_probs, calibration=calibration)
 
 
 def _top_indices_labels_and_margins(probs: np.ndarray) -> tuple[np.ndarray, tuple[str, ...], np.ndarray]:
@@ -170,27 +283,18 @@ def predict_kws12_from_waveforms(
     sample_rate: int = 16_000,
 ) -> ExternalKWSBatchResult:
     if str(model_id).strip() == ENSEMBLE_AST_SUPERB_MODEL_ID:
-        ast = predict_kws12_from_waveforms(
+        fused = predict_ensemble_ast_superb_from_waveforms(
             waveforms,
-            model_id=DEFAULT_EXTERNAL_AUX_MODEL_ID,
             device=device,
             sample_rate=sample_rate,
         )
-        superb = predict_kws12_from_waveforms(
-            waveforms,
-            model_id=DEFAULT_EXTERNAL_VERIFIER_MODEL_ID,
-            device=device,
-            sample_rate=sample_rate,
-        )
-        probs = _blend_ast_superb_probs(ast.probs, superb.probs)
-        top_indices, top_labels, margins = _top_indices_labels_and_margins(probs)
         return ExternalKWSBatchResult(
             model_id=str(model_id),
-            runtime_device=str(ast.runtime_device),
-            probs=probs,
-            top_indices=top_indices,
-            top_labels=top_labels,
-            margins=margins,
+            runtime_device=str(fused.runtime_device),
+            probs=fused.probs,
+            top_indices=fused.top_indices,
+            top_labels=fused.top_labels,
+            margins=fused.margins,
         )
 
     normalized = [_to_numpy_waveform(waveform) for waveform in waveforms]
@@ -206,6 +310,39 @@ def predict_kws12_from_waveforms(
     return ExternalKWSBatchResult(
         model_id=str(model_id),
         runtime_device=str(runtime_device),
+        probs=probs,
+        top_indices=top_indices,
+        top_labels=top_labels,
+        margins=margins,
+    )
+
+
+def predict_ensemble_ast_superb_from_waveforms(
+    waveforms: Sequence[np.ndarray | torch.Tensor | Sequence[float]],
+    *,
+    device: str = "auto",
+    sample_rate: int = 16_000,
+    calibration: Mapping[str, object] | None = None,
+) -> ExternalEnsembleBatchResult:
+    ast = predict_kws12_from_waveforms(
+        waveforms,
+        model_id=DEFAULT_EXTERNAL_AUX_MODEL_ID,
+        device=device,
+        sample_rate=sample_rate,
+    )
+    superb = predict_kws12_from_waveforms(
+        waveforms,
+        model_id=DEFAULT_EXTERNAL_VERIFIER_MODEL_ID,
+        device=device,
+        sample_rate=sample_rate,
+    )
+    probs = _blend_ast_superb_probs(ast.probs, superb.probs, calibration=calibration)
+    top_indices, top_labels, margins = _top_indices_labels_and_margins(probs)
+    return ExternalEnsembleBatchResult(
+        model_id=ENSEMBLE_AST_SUPERB_MODEL_ID,
+        runtime_device=str(ast.runtime_device),
+        ast_probs=ast.probs,
+        superb_probs=superb.probs,
         probs=probs,
         top_indices=top_indices,
         top_labels=top_labels,

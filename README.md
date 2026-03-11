@@ -152,6 +152,7 @@ Current public interpretation:
 
 - The realtime path is implemented and smoke-validated.
 - The offline benchmark is the formal `95%+` result today.
+- Experimental last-mile threshold sweeps are not part of the shipped public profile; when they improve recall, they currently do so by breaking precision on hard words such as `off`.
 - Once both long realtime reports pass, this README can be updated to promote realtime from “smoke validated” to “fully validated on the local protocol.”
 
 ## Public Demo And Release Assets

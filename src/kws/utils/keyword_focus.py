@@ -32,6 +32,7 @@ DEFAULT_WEAK_HIGHLIGHT_HOLD_MS = 280
 DEFAULT_MIN_MARGIN = 0.0
 DEFAULT_TARGET_CONFUSION_MARGIN = 0.08
 DEFAULT_WEAK_CONFUSION_MARGIN = 0.12
+DEFAULT_EXTERNAL_FORCE_OPEN_CONF_THRESHOLD = 0.80
 
 DEFAULT_CONFUSION_GROUPS: Dict[str, tuple[str, ...]] = {
     "off": ("up", "on"),
@@ -176,6 +177,28 @@ def load_keyword_calibration(path: str | Path | None) -> Dict[str, object]:
     if not target.exists():
         return {}
     return json.loads(target.read_text(encoding="utf-8"))
+
+
+def resolve_external_force_open_conf_threshold(
+    calibration: Mapping[str, object] | None,
+    label: str | None,
+    *,
+    default: float = DEFAULT_EXTERNAL_FORCE_OPEN_CONF_THRESHOLD,
+) -> float:
+    payload = calibration or {}
+    defaults = payload.get("defaults", {}) if isinstance(payload.get("defaults", {}), Mapping) else {}
+    keywords = payload.get("keywords", {}) if isinstance(payload.get("keywords", {}), Mapping) else {}
+    entry = keywords.get(str(label), {}) if label else {}
+    if not isinstance(entry, Mapping):
+        entry = {}
+    resolved = entry.get(
+        "external_force_open_conf_threshold",
+        defaults.get("external_force_open_conf_threshold", default),
+    )
+    try:
+        return float(np.clip(float(resolved), 0.0, 1.0))
+    except (TypeError, ValueError):
+        return float(np.clip(float(default), 0.0, 1.0))
 
 
 def build_command_class_weights(focus: Mapping[str, object] | None) -> np.ndarray:
@@ -432,6 +455,7 @@ def fit_keyword_calibration(
         "prototype_bonus_max": DEFAULT_PROTOTYPE_BONUS_MAX,
         "min_margin": DEFAULT_MIN_MARGIN,
         "highlight_hold_ms": DEFAULT_HIGHLIGHT_HOLD_MS,
+        "external_force_open_conf_threshold": DEFAULT_EXTERNAL_FORCE_OPEN_CONF_THRESHOLD,
     }
     keywords: Dict[str, Dict[str, float | int]] = {}
 
@@ -484,6 +508,7 @@ def fit_keyword_calibration(
             "prototype_bonus_max": float(prototype_bonus),
             "min_margin": float(min_margin),
             "highlight_hold_ms": int(highlight_hold_ms),
+            "external_force_open_conf_threshold": float(defaults["external_force_open_conf_threshold"]),
             "support": int(positives.sum()),
         }
 

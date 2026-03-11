@@ -21,6 +21,7 @@ from kws.demo.realtime import (
     get_sensitivity_tuning,
     load_realtime_demo,
 )
+from kws.demo.realtime_trace import collect_clip_trace, replay_clip_trace
 from kws.train.metrics import compute_kws12_breakdown_from_indices
 
 
@@ -30,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", type=str, default="auto")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--selection-profile", type=str, default="stable", choices=["stable", "balanced", "fast"])
+    parser.add_argument("--keyword-calibration-path", type=str, default="")
+    parser.add_argument("--external-ensemble-calibration-path", type=str, default="")
     parser.add_argument("--wheel", type=str, default="kws12", choices=["kws12", "target10"])
     parser.add_argument("--runtime-label-backend", type=str, default="")
     parser.add_argument("--external-kws-model", type=str, default="ensemble/ast-superb-kws12")
@@ -179,6 +182,13 @@ def _predict_clip(
     args: argparse.Namespace,
     tuning,
 ) -> tuple[int, bool, float | None]:
+    if (
+        bundle.resolved_profile.demo_profile == "accuracy-first-realtime"
+        and bundle.resolved_profile.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND
+    ):
+        trace = collect_clip_trace(bundle=bundle, record=record, args=args)
+        return replay_clip_trace(bundle=bundle, trace=trace, args=args, tuning=tuning)
+
     gate_mode, wake_open_thr, wake_close_thr = _resolve_gate_args(args)
     adaptive_cfg = AdaptiveGateConfig(
         calibration_seconds=float(args.calibration_seconds),
@@ -221,6 +231,12 @@ def _predict_clip(
         vote_min_count=int(args.vote_min_count) if args.vote_min_count is not None else tuning.vote_min_count,
         passive_profile=None,
         keyword_calibration=bundle.keyword_calibration,
+        external_ensemble_calibration=bundle.external_ensemble_calibration,
+        segment_decoder=bundle.segment_decoder,
+        segment_decoder_disabled=bundle.segment_decoder_disabled,
+        realtime_specialist=bundle.realtime_specialist,
+        realtime_specialist_calibration=bundle.realtime_specialist_calibration,
+        segment_runtime_enabled=bundle.resolved_profile.demo_profile == "accuracy-first-realtime",
         verifier=bundle.verifier,
         runtime_label_backend=bundle.resolved_profile.runtime_label_backend,
         external_kws_model=bundle.resolved_profile.external_kws_model,
@@ -247,30 +263,21 @@ def _predict_clip(
         snapshot = engine.process_chunk(chunk, now=sim_now, now_wall=sim_now, queue_fill_ratio=0.0)
         if snapshot is not None:
             frames.append((sim_now, snapshot))
+    flushed = engine.flush_pending_segment(now=sim_now, now_wall=sim_now)
+    if flushed is not None:
+        # Keep the final flushed match inside the same evaluation window that replay uses.
+        frames.append((window_end, flushed))
 
     return _summarize_clip_frames(frames, window_start=window_start, window_end=window_end)
 
 
-def main() -> None:
-    args = parse_args()
-    bundle = load_realtime_demo(
-        checkpoint=args.checkpoint,
-        demo_profile=args.demo_profile,
-        detector_device_preference=args.device,
-        selection_profile=args.selection_profile,
-        wheel=args.wheel,
-        runtime_label_backend=args.runtime_label_backend,
-        external_kws_model=args.external_kws_model,
-        external_kws_device=args.external_kws_device,
-        ranking_iters=8,
-        no_cache_ranking=False,
-        rebuild_ranking=False,
-        device_auto_bench_iters=6,
-    )
-    tuning = get_sensitivity_tuning(args.sensitivity_profile)
-    manifest_path = Path("data/processed/manifests") / f"local_{args.split}.jsonl"
-    records = _manifest_records(manifest_path, limit_per_class=int(args.limit_per_class))
-
+def evaluate_records(
+    *,
+    bundle,
+    records: list[ManifestRecord],
+    args: argparse.Namespace,
+    tuning,
+) -> dict[str, object]:
     preds: list[int] = []
     targets: list[int] = []
     no_match_count = 0
@@ -293,12 +300,20 @@ def main() -> None:
     preds_arr = np.asarray(preds, dtype=np.int64)
     targets_arr = np.asarray(targets, dtype=np.int64)
     metrics = compute_kws12_breakdown_from_indices(preds_arr, targets_arr)
-    payload = {
+    return {
         "split": args.split,
         "num_eval_samples": int(targets_arr.size),
         "runtime_label_backend": bundle.resolved_profile.runtime_label_backend,
-        "external_kws_model_id": bundle.resolved_profile.external_kws_model if bundle.resolved_profile.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND else "",
-        "external_kws_device": bundle.resolved_profile.external_kws_device if bundle.resolved_profile.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND else "",
+        "external_kws_model_id": (
+            bundle.resolved_profile.external_kws_model
+            if bundle.resolved_profile.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND
+            else ""
+        ),
+        "external_kws_device": (
+            bundle.resolved_profile.external_kws_device
+            if bundle.resolved_profile.runtime_label_backend == DEFAULT_RUNTIME_LABEL_BACKEND
+            else ""
+        ),
         "per_class_kws12": metrics.get("per_class_kws12", {}),
         "min_kws12_precision": float(metrics.get("min_kws12_precision", 0.0)),
         "min_kws12_recall": float(metrics.get("min_kws12_recall", 0.0)),
@@ -317,7 +332,39 @@ def main() -> None:
             and float(metrics.get("kws12_unknown_to_target_rate", 1.0)) <= 0.02
         ),
     }
-    output_path = Path(args.output).expanduser().resolve() if args.output else (Path.cwd() / "reports" / f"realtime_{bundle.resolved_profile.demo_profile}_{args.split}.json").resolve()
+
+
+def run_validation(args: argparse.Namespace) -> dict[str, object]:
+    bundle = load_realtime_demo(
+        checkpoint=args.checkpoint,
+        demo_profile=args.demo_profile,
+        detector_device_preference=args.device,
+        selection_profile=args.selection_profile,
+        keyword_calibration_path=args.keyword_calibration_path,
+        external_ensemble_calibration_path=args.external_ensemble_calibration_path,
+        wheel=args.wheel,
+        runtime_label_backend=args.runtime_label_backend,
+        external_kws_model=args.external_kws_model,
+        external_kws_device=args.external_kws_device,
+        ranking_iters=8,
+        no_cache_ranking=False,
+        rebuild_ranking=False,
+        device_auto_bench_iters=6,
+    )
+    tuning = get_sensitivity_tuning(args.sensitivity_profile)
+    manifest_path = Path("data/processed/manifests") / f"local_{args.split}.jsonl"
+    records = _manifest_records(manifest_path, limit_per_class=int(args.limit_per_class))
+    return evaluate_records(bundle=bundle, records=records, args=args, tuning=tuning)
+
+
+def main() -> None:
+    args = parse_args()
+    payload = run_validation(args)
+    output_path = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else (Path.cwd() / "reports" / f"realtime_{args.demo_profile}_{args.split}.json").resolve()
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(payload, indent=2, ensure_ascii=False))

@@ -12,6 +12,7 @@ Use the following rule before changing the README headline:
   - offline local-protocol benchmark passed
   - desktop realtime path exists and smoke validation passed
   - full-stream realtime claim remains experimental
+- Do not ship manual threshold-sweep experiments as the public realtime profile unless they pass the full `valid/test` gate. If a sweep improves recall but degrades precision, restore the pre-sweep realtime artifacts and keep the claim conservative.
 
 Do not headline reduced-data HI-MIA numbers.
 
