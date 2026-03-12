@@ -78,6 +78,10 @@ def test_inference_worker_emits_snapshot() -> None:
         passive_profile=None,
         keyword_calibration=None,
     )
+    assert worker.engine.segment_runtime_enabled is False
+    assert worker.engine.segment_decoder is None
+    assert worker.engine.segment_decoder_disabled is True
+    assert worker.engine.realtime_specialist is None
     worker.start()
 
     q.put(np.full(CLIP_SAMPLES, 0.01, dtype=np.float32))
