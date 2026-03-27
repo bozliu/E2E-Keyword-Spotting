@@ -1,8 +1,8 @@
 # E2E Keyword Spotting v3
 
-[![`v3` demo preview](docs/assets/realtime_accuracy_first_demo.gif)](https://raw.githubusercontent.com/bozliu/E2E-Keyword-Spotting/v3/docs/assets/v3_demo.mp4)
+[![`v3` demo preview](docs/assets/realtime_accuracy_first_demo.gif)](https://youtube.com/shorts/_sVhtZGHYjo?feature=share)
 
-`v3` demo video: [open MP4](https://raw.githubusercontent.com/bozliu/E2E-Keyword-Spotting/v3/docs/assets/v3_demo.mp4) or [browse repo file](docs/assets/v3_demo.mp4)
+`v3` demo video: [watch on YouTube Shorts](https://youtube.com/shorts/_sVhtZGHYjo?feature=share)
 
 `v3` is the current public release of this repository: a release-focused rebuild of the older end-to-end keyword spotting project, now organized around reproducible benchmarks, a CPU-safe baseline demo, and an `accuracy-first` desktop demo that uses an imported Hugging Face ensemble on Apple MPS.
 
