@@ -1,5 +1,9 @@
 # E2E Keyword Spotting v3
 
+[![`v3` demo preview](docs/assets/realtime_accuracy_first_demo.gif)](https://youtube.com/shorts/_sVhtZGHYjo?feature=share)
+
+`v3` demo video: [watch on YouTube Shorts](https://youtube.com/shorts/_sVhtZGHYjo?feature=share)
+
 `v3` is the current public release of this repository: a release-focused rebuild of the older end-to-end keyword spotting project, now organized around reproducible benchmarks, a CPU-safe baseline demo, and an `accuracy-first` desktop demo that uses an imported Hugging Face ensemble on Apple MPS.
 
 The short version:
@@ -128,7 +132,7 @@ Run these before turning realtime into a public headline claim:
 
 ```bash
 conda run -n dl python -m kws.demo.validate_realtime \
-  --demo-profile accuracy-first \
+  --demo-profile accuracy-first-realtime \
   --checkpoint auto \
   --device mps \
   --external-kws-device mps \
@@ -139,7 +143,7 @@ conda run -n dl python -m kws.demo.validate_realtime \
 
 ```bash
 conda run -n dl python -m kws.demo.validate_realtime \
-  --demo-profile accuracy-first \
+  --demo-profile accuracy-first-realtime \
   --checkpoint auto \
   --device mps \
   --external-kws-device mps \
